@@ -48,11 +48,17 @@ export class PlannerEngine {
       model = openai.chat(modelName || 'gpt-4o');
     }
 
-    try {
-      const { text } = await generateText({
-        model,
-        abortSignal,
-        system: `You are the Planner AI for a Dual-Engine Agent desktop application.
+    const MAX_RETRIES = 3;
+    let lastError: Error | null = null;
+    let retryMessages = [
+      ...chatHistory,
+      { role: 'user', content: userRequest }
+    ];
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const systemPrompt = attempt === 1
+          ? `You are the Planner AI for a Dual-Engine Agent desktop application.
 Your job is to break down the user's latest complex request into a series of simple, atomic subtasks.
 You have access to the conversation history. Use it to understand references like "do it again" or "fix this".
 These subtasks will be sent one by one to a Worker AI that runs inside a Node.js sandbox.
@@ -77,36 +83,63 @@ CRITICAL INSTRUCTION: You MUST respond strictly with a raw JSON object matching 
   ]
 }
 
-Provide a sequential plan as a JSON object.`,
-        messages: [
-          ...chatHistory,
-          { role: 'user', content: userRequest }
-        ]
-      });
+Provide a sequential plan as a JSON object.`
+          : `IMPORTANT CORRECTION (Attempt ${attempt}/${MAX_RETRIES}): Your previous response was not valid JSON. You MUST output ONLY a raw JSON object — no markdown, no headings, no explanation.
 
-      let cleanJson = text.trim();
-      
-      // Try to extract from a markdown code block first
-      const jsonBlockMatch = cleanJson.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-      if (jsonBlockMatch && jsonBlockMatch[1]) {
-        cleanJson = jsonBlockMatch[1].trim();
-      } else {
-        // Fallback: robustly extract the JSON object by finding the outermost braces
-        const firstBrace = cleanJson.search(/[{[]/);
-        const lastBrace = Math.max(cleanJson.lastIndexOf('}'), cleanJson.lastIndexOf(']'));
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-          cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
+Start your response with { and end with }. Nothing else.
+
+Required schema:
+{
+  "summary": "...",
+  "subtasks": [{ "id": "...", "description": "...", "expected_output": "..." }]
+}
+
+Try again now.`;
+
+        const { text } = await generateText({
+          model,
+          abortSignal,
+          system: systemPrompt,
+          messages: retryMessages
+        });
+
+        let cleanJson = text.trim();
+        
+        // Try to extract from a markdown code block first
+        const jsonBlockMatch = cleanJson.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+        if (jsonBlockMatch && jsonBlockMatch[1]) {
+          cleanJson = jsonBlockMatch[1].trim();
+        } else {
+          // Fallback: robustly extract the JSON object by finding the outermost braces
+          const firstBrace = cleanJson.search(/[{[]/);
+          const lastBrace = Math.max(cleanJson.lastIndexOf('}'), cleanJson.lastIndexOf(']'));
+          if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
+          }
         }
-      }
 
-      try {
-        return JSON.parse(cleanJson);
-      } catch (parseError) {
-        throw new Error(`The model failed to output a valid JSON object. It likely ignored the formatting instructions and outputted plain text. Raw output snippet: ${cleanJson.substring(0, 100)}...`);
+        try {
+          return JSON.parse(cleanJson);
+        } catch (parseError) {
+          // JSON parsing failed — prepare retry context by appending bad output and correction request
+          lastError = new Error(`Attempt ${attempt}: model output was not valid JSON. Snippet: ${cleanJson.substring(0, 200)}`);
+          console.warn(`[Planner] Retry ${attempt}/${MAX_RETRIES}: JSON parse failed.`, lastError.message);
+          retryMessages = [
+            ...chatHistory,
+            { role: 'user', content: userRequest },
+            { role: 'assistant', content: text },
+            { role: 'user', content: `Your response was not valid JSON. Please output ONLY a raw JSON object starting with { and ending with }. No markdown, no headings, no extra text.` }
+          ];
+          // Continue to next attempt
+        }
+      } catch (err: any) {
+        // Network / API error — don't retry, throw immediately
+        console.error('[Planner Error]', err);
+        throw new Error(`Failed to generate plan: ${err.message}`);
       }
-    } catch (err: any) {
-      console.error('[Planner Error]', err);
-      throw new Error(`Failed to generate plan: ${err.message}`);
     }
+
+    // All retries exhausted
+    throw new Error(`Failed to generate plan: model repeatedly failed to produce valid JSON after ${MAX_RETRIES} attempts. Last error: ${lastError?.message}`);
   }
 }
