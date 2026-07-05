@@ -4,6 +4,27 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveSafePath } from './utils';
 
+function calculateLineDiff(oldBlock: string, newBlock: string) {
+  const oldLines = oldBlock.split('\n');
+  const newLines = newBlock.split('\n');
+  let unchangedCount = 0;
+  
+  const newLinesPool = [...newLines];
+  
+  for (let i = 0; i < oldLines.length; i++) {
+    const matchIdx = newLinesPool.indexOf(oldLines[i]);
+    if (matchIdx !== -1) {
+      unchangedCount++;
+      newLinesPool.splice(matchIdx, 1);
+    }
+  }
+  
+  return {
+    removed: oldLines.length - unchangedCount,
+    added: newLines.length - unchangedCount
+  };
+}
+
 export function createFSTools(
   workspacePath: string,
   onLog: (log: string) => void,
