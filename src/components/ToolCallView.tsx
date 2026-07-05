@@ -51,7 +51,7 @@ export function ToolCallView({ act, res, msg, idx, mergedSteps, openTabs, setOpe
                 <span 
                   style={{ cursor: 'pointer', color: 'var(--accent)', textDecoration: 'underline' }}
                   onClick={() => {
-                    const tabName = act.args.filePath || act.args.targetFile;
+                    const tabName = act.args.filePath || act.args.targetFile || act.args.AbsolutePath || act.args.path;
                     if (tabName && !openTabs.includes(tabName)) {
                       setOpenTabs(prev => [...prev, tabName]);
                     }

@@ -44,7 +44,7 @@ export function AgentStepView({ step, idx, mergedSteps, msg, openTabs, setOpenTa
                   };
 
                   if (isFileMod || isReadFile) {
-                    const fullPath = act.args?.filePath || act.args?.targetFile || act.args?.AbsolutePath;
+                    const fullPath = act.args?.filePath || act.args?.targetFile || act.args?.AbsolutePath || act.args?.path;
                     const fileName = (fullPath || 'file').split(/[/\\]/).pop();
                     
                     const fileNameSpan = (
