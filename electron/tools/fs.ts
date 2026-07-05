@@ -152,7 +152,8 @@ export function createFSTools(
             // Calculate exact match line range
             const preMatch = normalizedOld.substring(0, normalizedOld.indexOf(normalizedTarget));
             const startLine = preMatch.split('\n').length;
-                                    const endLine = startLine + newReplacementLines - 1;
+                                    const newReplacementLines = replacementContent.replace(/\r\n/g, '\n').split('\n').length;
+            const endLine = startLine + newReplacementLines - 1;
             
             const newContent = normalizedOld.replace(normalizedTarget, replacementContent.replace(/\r\n/g, '\n'));
             fs.writeFileSync(fullPath, newContent, 'utf8');
