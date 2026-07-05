@@ -622,19 +622,6 @@ function App() {
         if (state) {
           setOpenTabs(state.openTabs || []);
           setActiveTab(state.activeTab || '');
-          if (state.provider) setProvider(state.provider);
-          if (state.plannerModel) setPlannerModel(state.plannerModel);
-          if (state.workerModel) setWorkerModel(state.workerModel);
-          if (state.openaiKey) setOpenaiKey(state.openaiKey);
-          if (state.openaiUrl) setOpenaiUrl(state.openaiUrl);
-          if (state.sensenovaKey) setSensenovaKey(state.sensenovaKey);
-          if (state.sensenovaUrl) setSensenovaUrl(state.sensenovaUrl);
-          if (state.anthropicKey) setAnthropicKey(state.anthropicKey);
-          if (state.anthropicUrl) setAnthropicUrl(state.anthropicUrl);
-          if (state.googleAuthMethod) setGoogleAuthMethod(state.googleAuthMethod);
-          if (state.googleKey) setGoogleKey(state.googleKey);
-          if (state.googleUrl) setGoogleUrl(state.googleUrl);
-          if (state.googleOauthToken) setGoogleOauthToken(state.googleOauthToken);
         } else {
           setOpenTabs([]);
           setActiveTab('');
@@ -653,20 +640,12 @@ function App() {
       window.ipcRenderer.invoke('agent:save-workspace-state', {
         workspacePath,
         state: { 
-          openTabs, activeTab,
-          provider, plannerModel, workerModel,
-          openaiKey, openaiUrl,
-          sensenovaKey, sensenovaUrl,
-          anthropicKey, anthropicUrl,
-          googleAuthMethod, googleKey, googleUrl, googleOauthToken
+          openTabs, activeTab
         }
       });
     } catch(e) {}
   }, [
-    openTabs, activeTab, workspacePath, isStateLoaded,
-    provider, plannerModel, workerModel,
-    openaiKey, openaiUrl, sensenovaKey, sensenovaUrl,
-    anthropicKey, anthropicUrl, googleAuthMethod, googleKey, googleUrl, googleOauthToken
+    openTabs, activeTab, workspacePath, isStateLoaded
   ]);
 
 
