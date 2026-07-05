@@ -6,7 +6,7 @@ interface SettingsModalProps {
   activeTab: 'general' | 'auth' | 'models';
   setActiveTab: (tab: 'general' | 'auth' | 'models') => void;
   provider: string;
-  setProvider: (p: string) => void;
+  setProvider: (p: 'openai' | 'sensenova' | 'anthropic' | 'google') => void;
   openaiKey: string;
   setOpenaiKey: (k: string) => void;
   sensenovaKey: string;
@@ -32,7 +32,7 @@ interface SettingsModalProps {
   showHiddenFiles: boolean;
   setShowHiddenFiles: (s: boolean) => void;
   googleAuthMethod: string;
-  setGoogleAuthMethod: (m: string) => void;
+  setGoogleAuthMethod: (m: 'key' | 'oauth') => void;
   googleOauthToken: string;
   isLoadingModels: boolean;
   availableModels: string[];

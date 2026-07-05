@@ -12,6 +12,7 @@ import { ContextMenu } from './components/ContextMenu';
 import { HistoryModal } from './components/HistoryModal';
 import { SettingsModal } from './components/SettingsModal';
 import { AgentStepView } from './components/AgentStepView';
+import { ChatInputBox } from './components/ChatInputBox';
 import { FileNode, Message, Conversation } from './types';
 
 const parseReasoning = (content: string) => {
@@ -93,7 +94,6 @@ function App() {
   const [googleUrl, setGoogleUrl] = useState('https://generativelanguage.googleapis.com/v1beta');
   const [googleOauthToken, setGoogleOauthToken] = useState('');
   
-  const [isEditingBaseUrl, setIsEditingBaseUrl] = useState(false);
   
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [plannerModel, setPlannerModel] = useState<string>('');
@@ -109,12 +109,9 @@ function App() {
   const { size: terminalHeight, startResizing: startResizingTerminal } = useResizer(200, 'top');
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<string>('');
-  const [chatInput, setChatInput] = useState('');
-  const [historyIndex, setHistoryIndex] = useState(-1);
   const [terminalLogs, setTerminalLogs] = useState<string>('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState<'general' | 'auth' | 'models'>('auth');
-  const [showApiKey, setShowApiKey] = useState(false);
   const [showHiddenFiles, setShowHiddenFiles] = useState(false);
   const [contextMenu, setContextMenu] = useState<{x: number, y: number, path: string, isDir: boolean} | null>(null);
   const [editingNode, setEditingNode] = useState<{path: string, type: 'rename' | 'newFile' | 'newDir', initialValue: string} | null>(null);
@@ -733,7 +730,7 @@ function App() {
     if (workspacePath) refreshFileTree();
   }, [showHiddenFiles, workspacePath]);
 
-  const handleSend = async () => {
+  const handleSend = async (userTask: string) => {
     let tokenOrKey = '';
     let currentBaseUrl = '';
     let activeProtocol: string = 'openai';
@@ -769,16 +766,12 @@ function App() {
       currentBaseUrl = currentBaseUrl.slice(0, -1);
     }
 
-    if (!chatInput.trim()) return;
+    if (!userTask || !userTask.trim()) return;
     
     if (!tokenOrKey) {
       alert(`Please configure your ${provider} credentials first!`);
       return;
     }
-
-    const userTask = chatInput;
-    setChatInput('');
-    setHistoryIndex(-1);
     const newAiMsgId = crypto.randomUUID();
     setMessages(prev => [
       ...prev, 
@@ -1195,102 +1188,17 @@ function App() {
             ))}
             <div ref={messagesEndRef} />
           </div>
-          <div className="chat-input" style={{ background: 'var(--bg-secondary)', padding: '10px' }}>
-            <textarea 
-              className="chat-input-textarea"
-              placeholder="Ask the Dual-Engine Agent to do something..." 
-              value={chatInput}
-              onChange={e => {
-                setChatInput(e.target.value);
-                setHistoryIndex(-1);
-              }}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  handleSend();
-                } else if (e.key === 'ArrowUp') {
-                  const rawUserHistory = messages.filter(m => m.role === 'user').map(m => m.content);
-                  const userHistory = rawUserHistory.filter((content, index, arr) => index === 0 || content !== arr[index - 1]);
-                  if (userHistory.length > 0) {
-                     e.preventDefault();
-                     const nextIndex = historyIndex < userHistory.length - 1 ? historyIndex + 1 : historyIndex;
-                     setHistoryIndex(nextIndex);
-                     setChatInput(userHistory[userHistory.length - 1 - nextIndex]);
-                  }
-                } else if (e.key === 'ArrowDown') {
-                  const rawUserHistory = messages.filter(m => m.role === 'user').map(m => m.content);
-                  const userHistory = rawUserHistory.filter((content, index, arr) => index === 0 || content !== arr[index - 1]);
-                  if (historyIndex > 0) {
-                     e.preventDefault();
-                     const nextIndex = historyIndex - 1;
-                     setHistoryIndex(nextIndex);
-                     setChatInput(userHistory[userHistory.length - 1 - nextIndex]);
-                  } else if (historyIndex === 0) {
-                     e.preventDefault();
-                     setHistoryIndex(-1);
-                     setChatInput('');
-                  }
-                }
-              }}
-              style={{ width: '100%', boxSizing: 'border-box' }}
-            />
-            <div className="chat-input-toolbar">
-              <div className="models">
-                <select 
-                  value={plannerModel} 
-                  onChange={e => {
-                    setPlannerModel(e.target.value);
-                  }}
-                  title="Main Engine (Planner Model)"
-                  style={{
-                    background: 'transparent',
-                    color: 'var(--text-secondary)',
-                    border: 'none',
-                    fontSize: '11px',
-                    maxWidth: '120px',
-                    outline: 'none',
-                    cursor: 'pointer'
-                  }}
-                >
-                  <option value="">(Main) Auto</option>
-                  {availableModels.map(m => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </select>
-                <select 
-                  value={workerModel} 
-                  onChange={e => {
-                    setWorkerModel(e.target.value);
-                  }}
-                  title="Sub Engine (Worker Model)"
-                  style={{
-                    background: 'transparent',
-                    color: 'var(--text-secondary)',
-                    border: 'none',
-                    fontSize: '11px',
-                    maxWidth: '120px',
-                    outline: 'none',
-                    cursor: 'pointer'
-                  }}
-                >
-                  <option value="">(Sub) Auto</option>
-                  {availableModels.map(m => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </select>
-              </div>
-              {isRunning ? (
-                <button
-                  onClick={handleStop}
-                  style={{ background: '#dc3545', color: 'white', border: 'none', padding: '6px 16px', borderRadius: '4px', cursor: 'pointer' }}
-                >
-                  ⏹ Stop
-                </button>
-              ) : (
-                <button onClick={handleSend} disabled={!chatInput.trim()}>Send</button>
-              )}
-            </div>
-          </div>
+          <ChatInputBox 
+            onSend={handleSend}
+            isRunning={isRunning}
+            handleStop={handleStop}
+            messages={messages}
+            plannerModel={plannerModel}
+            setPlannerModel={setPlannerModel}
+            workerModel={workerModel}
+            setWorkerModel={setWorkerModel}
+            availableModels={availableModels}
+          />
         </div>
       </div>
     ) : (

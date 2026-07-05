@@ -1,5 +1,5 @@
 import React from 'react';
-import { Conversation, Message } from '../types';
+import { Conversation } from '../types';
 
 interface HistoryModalProps {
   isOpen: boolean;
