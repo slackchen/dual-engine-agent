@@ -16,7 +16,7 @@ interface ToolCallViewProps {
 export function ToolCallView({ act, res, msg, idx, mergedSteps, openTabs, setOpenTabs, setActiveTab, setDiffState }: ToolCallViewProps) {
   const isCmd = act.toolName === 'runCommand' || act.toolName === 'run_command' || act.toolName === 'executeCommand';
   const isFileMod = act.toolName === 'editFileContent' || act.toolName === 'writeFile' || act.toolName === 'createFile' || act.toolName === 'multi_replace_file_content' || act.toolName === 'replace_file_content';
-  const isReadFile = act.toolName === 'readFile' || act.toolName === 'viewFile' || act.toolName === 'read_file' || act.toolName === 'view_file';
+  const _isReadFile = act.toolName === 'readFile' || act.toolName === 'viewFile' || act.toolName === 'read_file' || act.toolName === 'view_file';
   const hasArgs = act.args && Object.keys(act.args).length > 0;
 
   return (
