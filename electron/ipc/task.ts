@@ -7,10 +7,22 @@ import { openBrowserPreview } from './browser';
 export function registerTaskHandlers() {
   const planner = new PlannerEngine();
   const worker = new WorkerEngine();
+  const abortControllers: Record<string, AbortController> = {};
+
+  ipcMain.handle('agent:stop-task', (event, { runId }) => {
+    if (abortControllers[runId]) {
+      abortControllers[runId].abort();
+      delete abortControllers[runId];
+    }
+  });
 
   ipcMain.handle('agent:run-task', async (event, arg) => {
     const { protocol, authMethod, tokenOrKey, plannerModel, workerModel, task, workspacePath, baseUrl, chatHistory, maxSteps, runId } = arg;
     if (!task) return 'Error: Task is required';
+
+    const abortController = new AbortController();
+    abortControllers[runId] = abortController;
+    const signal = abortController.signal;
 
     try {
       event.sender.send('agent:update', { type: 'status', data: 'Planning subtasks...', runId });
@@ -23,7 +35,8 @@ export function registerTaskHandlers() {
         plannerModel, 
         task, 
         baseUrl,
-        chatHistory || []
+        chatHistory || [],
+        signal
       );
       
       event.sender.send('agent:update', { type: 'plan', data: plan, runId });
@@ -63,7 +76,8 @@ export function registerTaskHandlers() {
           },
           baseUrl,
           chatHistory || [],
-          maxSteps || 20
+          maxSteps || 20,
+          signal
         );
         
         runningContext += `[Subtask]: ${sub.description}\n[Result]: ${typeof result === 'string' ? result : JSON.stringify(result)}\n\n`;
@@ -76,6 +90,9 @@ export function registerTaskHandlers() {
       
       return 'All tasks completed';
     } catch (err: any) {
+      if (err.name === 'AbortError' || (err.message && err.message.includes('AbortError'))) {
+        return 'Stopped by user';
+      }
       let errMsg = err.message;
       if (errMsg.includes('GenerateRequestsPerDayPerProjectPerModel-FreeTier')) {
         errMsg = "Google Gemini Free Tier Daily Quota Exceeded (Limit: 20 requests/day). Please switch to OpenAI or a paid API Key.";

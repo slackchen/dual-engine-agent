@@ -14,7 +14,8 @@ export class PlannerEngine {
     modelName: string, 
     userRequest: string,
     baseUrl: string,
-    chatHistory: any[]
+    chatHistory: any[],
+    abortSignal?: AbortSignal
   ) {
     let model;
     
@@ -50,6 +51,7 @@ export class PlannerEngine {
     try {
       const { text } = await generateText({
         model,
+        abortSignal,
         system: `You are the Planner AI for a Dual-Engine Agent desktop application.
 Your job is to break down the user's latest complex request into a series of simple, atomic subtasks.
 You have access to the conversation history. Use it to understand references like "do it again" or "fix this".

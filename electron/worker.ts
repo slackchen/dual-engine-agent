@@ -21,7 +21,8 @@ export class WorkerEngine {
     onFileUpdated: (filePath: string, payload?: { startLine?: number; endLine?: number; oldContent?: string; newContent?: string; isEdit?: boolean }) => void,
     baseUrl: string,
     chatHistory: any[],
-    maxSteps: number
+    maxSteps: number,
+    abortSignal?: AbortSignal
   ): Promise<string> {
     if (!workspacePath) {
       throw new Error('No workspace selected. Please open a folder first.');
@@ -61,6 +62,7 @@ export class WorkerEngine {
     try {
       const { text } = await generateText({
         model,
+        abortSignal,
         stopWhen: ({ steps }) => {
           // Hard safety limit for total steps per subtask to prevent infinite loops
           if (steps.length >= 100) return true;

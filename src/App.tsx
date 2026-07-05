@@ -866,13 +866,15 @@ function App() {
   };
 
   const handleStop = () => {
-    // Force-complete the last message so the UI becomes responsive again
     setIsRunning(false);
     setMessages(prev => {
       const newMsgs = [...prev];
       if (newMsgs.length === 0) return prev;
       const last = { ...newMsgs[newMsgs.length - 1] };
       if (!last.isComplete) {
+        if (typeof window !== 'undefined' && (window as any).ipcRenderer) {
+          (window as any).ipcRenderer.invoke('agent:stop-task', { runId: last.id }).catch(console.error);
+        }
         last.isComplete = true;
         last.content = (last.content || '') + '\n\n*[Stopped by user]*';
         newMsgs[newMsgs.length - 1] = last;
