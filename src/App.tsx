@@ -290,48 +290,51 @@ function App() {
   const [diffState, setDiffState] = useState<{original: string, modified: string, startLine?: number} | null>(null);
   const [isRunning, setIsRunning] = useState(false);
 
-  const hasLoadedHistory = useRef(false);
   const userScrolledUp = useRef(false);
-  const chatContainerRef = useRef<HTMLElement | null>(null);
+  const chatContainerRef = useRef<HTMLDivElement | null>(null);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
 
-  // Attach scroll listener once on mount to track user's scroll position
-  useEffect(() => {
-    const container = document.querySelector('.chat-messages') as HTMLElement | null;
-    if (!container) return;
-    chatContainerRef.current = container;
-
-    const handleScroll = () => {
-      const { scrollTop, scrollHeight, clientHeight } = container;
-      // User is "scrolled up" if they are more than 100px from the bottom
-      userScrolledUp.current = scrollHeight - scrollTop - clientHeight > 100;
-    };
-
-    container.addEventListener('scroll', handleScroll, { passive: true });
-    return () => container.removeEventListener('scroll', handleScroll);
-  }, []);
-
-  // Auto-scroll when messages update, but only if user hasn't scrolled up
-  useEffect(() => {
+  // Track user scroll position via a direct ref on the div (avoids querySelector timing issues)
+  const handleChatScroll = useCallback(() => {
     const container = chatContainerRef.current;
     if (!container) return;
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const distFromBottom = scrollHeight - scrollTop - clientHeight;
+    userScrolledUp.current = distFromBottom > 120;
+    setShowScrollBtn(distFromBottom > 120);
+  }, []);
 
-    if (!hasLoadedHistory.current && messages.length > 0) {
-      hasLoadedHistory.current = true;
-      // Initial load: always scroll to bottom
-      setTimeout(() => {
-        container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-      }, 300);
-      return;
+  const scrollToBottom = useCallback((smooth = true) => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+    container.scrollTo({ top: container.scrollHeight, behavior: smooth ? 'smooth' : 'instant' });
+  }, []);
+
+  // Initial load: jump to bottom instantly when messages first populate
+  const hasInitialScrolled = useRef(false);
+  useEffect(() => {
+    if (!hasInitialScrolled.current && messages.length > 0 && chatContainerRef.current) {
+      hasInitialScrolled.current = true;
+      // Use a small delay to let React finish painting, then jump instantly
+      setTimeout(() => scrollToBottom(false), 80);
     }
+  }, [messages, scrollToBottom]);
 
-    // Only auto-scroll if user is already at (or near) the bottom
+  // Auto-scroll on new messages while at bottom
+  const prevMsgCount = useRef(0);
+  useEffect(() => {
+    const newCount = messages.length;
+    const isNewMessage = newCount > prevMsgCount.current;
+    prevMsgCount.current = newCount;
+
+    if (!hasInitialScrolled.current) return; // Wait for initial scroll first
+    if (!isNewMessage) return; // Content update within same messages array — still scroll
+
     if (!userScrolledUp.current) {
-      // Use requestAnimationFrame to ensure DOM has updated before measuring
-      requestAnimationFrame(() => {
-        container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-      });
+      requestAnimationFrame(() => scrollToBottom(true));
     }
-  }, [messages]);
+    // If scrolled up, the showScrollBtn button is already visible
+  }, [messages, scrollToBottom]);
   
   useEffect(() => {
     // @ts-ignore
@@ -1075,7 +1078,7 @@ function App() {
               💬 History
             </button>
           </div>
-          <div className="chat-messages">
+          <div className="chat-messages" ref={chatContainerRef} onScroll={handleChatScroll} style={{ position: 'relative' }}>
             {messages.map((msg) => (
               <div key={msg.id} className={`message ${msg.role}`}>
                 {msg.role === 'ai' && (
@@ -1233,6 +1236,18 @@ function App() {
             ))}
             <div ref={messagesEndRef} />
           </div>
+          {showScrollBtn && (
+            <button
+              onClick={() => { userScrolledUp.current = false; scrollToBottom(true); }}
+              style={{
+                position: 'absolute', bottom: '8px', right: '16px',
+                background: 'var(--accent)', color: '#fff', border: 'none',
+                borderRadius: '16px', padding: '6px 14px', cursor: 'pointer',
+                fontSize: '12px', fontWeight: 600, boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+                display: 'flex', alignItems: 'center', gap: '4px', zIndex: 10
+              }}
+            >↓ 新消息</button>
+          )}
           <ChatInputBox 
             onSend={handleSend}
             isRunning={isRunning}
