@@ -104,9 +104,9 @@ function App() {
   const [workspacePath, setWorkspacePath] = useState<string>('');
   const [isStateLoaded, setIsStateLoaded] = useState(false);
   const [isGlobalLoaded, setIsGlobalLoaded] = useState(false);
-  const { size: sidebarWidth, startResizing: startResizingSidebar } = useResizer(250, 'right');
-  const { size: chatWidth, startResizing: startResizingChat } = useResizer(400, 'left');
-  const { size: terminalHeight, startResizing: startResizingTerminal } = useResizer(200, 'top');
+  const { startResizing: startResizingSidebar } = useResizer(250, 'right', '--sidebar-width');
+  const { startResizing: startResizingChat } = useResizer(400, 'left', '--chat-width');
+  const { startResizing: startResizingTerminal } = useResizer(200, 'top', '--terminal-height');
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<string>('');
   const [terminalLogs, setTerminalLogs] = useState<string>('');
@@ -860,7 +860,7 @@ function App() {
     <>
     {workspacePath ? (
     <div className="app-container">
-      <div className="sidebar" style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}>
+      <div className="sidebar" style={{ width: 'var(--sidebar-width)', flexShrink: 0 }}>
         <div className="sidebar-header" style={{display:'flex', justifyContent: 'space-between', alignItems: 'center'}}>
            <div style={{fontWeight: 'bold'}}>Dual-Engine Agent</div>
            <button onClick={() => setIsSettingsOpen(true)} style={{background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '14px'}}>
@@ -1013,7 +1013,7 @@ function App() {
           )}
         </div>
         <div className="resizer-vertical" onMouseDown={startResizingTerminal} />
-        <div className="terminal-container" style={{ height: `${terminalHeight}px`, backgroundColor: '#1e1e1e', color: '#cccccc', padding: '10px', overflowY: 'auto', borderTop: '1px solid var(--border-color)', fontFamily: 'monospace', fontSize: '12px', whiteSpace: 'pre-wrap', flexShrink: 0 }}>
+        <div className="terminal-container" style={{ height: 'var(--terminal-height)', backgroundColor: '#1e1e1e', color: '#cccccc', padding: '10px', overflowY: 'auto', borderTop: '1px solid var(--border-color)', fontFamily: 'monospace', fontSize: '12px', whiteSpace: 'pre-wrap', flexShrink: 0 }}>
           <div style={{color: '#888', marginBottom: '5px', textTransform: 'uppercase', fontSize: '10px'}}>Terminal Logs</div>
           {terminalLogs || 'Terminal ready...'}
           <div ref={terminalEndRef} />
@@ -1021,7 +1021,7 @@ function App() {
       </div>
       <div className="resizer-horizontal" onMouseDown={startResizingChat} />
 
-      <div className="chat-container" style={{ width: `${chatWidth}px`, flexShrink: 0 }}>
+      <div className="chat-container" style={{ width: 'var(--chat-width)', flexShrink: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 15px', borderBottom: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}>
             <button onClick={handleNewChat} style={{ background: 'var(--accent)', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
               ➕ New Chat
