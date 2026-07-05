@@ -291,23 +291,45 @@ function App() {
   const [isRunning, setIsRunning] = useState(false);
 
   const hasLoadedHistory = useRef(false);
+  const userScrolledUp = useRef(false);
+  const chatContainerRef = useRef<HTMLElement | null>(null);
 
+  // Attach scroll listener once on mount to track user's scroll position
   useEffect(() => {
-    const container = document.querySelector('.chat-messages');
+    const container = document.querySelector('.chat-messages') as HTMLElement | null;
     if (!container) return;
-    
-    // Check if user is currently near the bottom (within 150px)
-    const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 150;
-    
-    if (isAtBottom) {
-      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-    }
-    
+    chatContainerRef.current = container;
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      // User is "scrolled up" if they are more than 100px from the bottom
+      userScrolledUp.current = scrollHeight - scrollTop - clientHeight > 100;
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Auto-scroll when messages update, but only if user hasn't scrolled up
+  useEffect(() => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+
     if (!hasLoadedHistory.current && messages.length > 0) {
       hasLoadedHistory.current = true;
+      // Initial load: always scroll to bottom
       setTimeout(() => {
         container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
       }, 300);
+      return;
+    }
+
+    // Only auto-scroll if user is already at (or near) the bottom
+    if (!userScrolledUp.current) {
+      // Use requestAnimationFrame to ensure DOM has updated before measuring
+      requestAnimationFrame(() => {
+        container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+      });
     }
   }, [messages]);
   
@@ -786,6 +808,8 @@ function App() {
       return;
     }
     const newAiMsgId = crypto.randomUUID();
+    // Reset scroll flag: user sent a new message, so jump to bottom regardless
+    userScrolledUp.current = false;
     setMessages(prev => [
       ...prev, 
       { id: crypto.randomUUID(), role: 'user', content: userTask, statusLogs: [], agentSteps: [], apiCallCount: 0, isComplete: true },
