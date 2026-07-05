@@ -52,12 +52,16 @@ function App() {
     maxSteps, setMaxSteps,
     isLoadingModels, setIsLoadingModels,
     showHiddenFiles, setShowHiddenFiles,
+    lastWorkspacePath,
+    isGlobalLoaded,
+    saveWorkspacePath,
   } = config;
 
   // ─── Workspace & File Tree ────────────────────────────────────────
   const workspace = useWorkspace(showHiddenFiles);
   const {
     workspacePath,
+    setWorkspacePath,
     fileTree,
     openTabs, setOpenTabs,
     activeTab, setActiveTab,
@@ -68,6 +72,18 @@ function App() {
     handleContextMenuAction,
     handleEditComplete,
   } = workspace;
+
+  // ─── Bridge: restore last workspace on startup ────────────────────
+  useEffect(() => {
+    if (isGlobalLoaded && lastWorkspacePath && !workspacePath) {
+      setWorkspacePath(lastWorkspacePath);
+    }
+  }, [isGlobalLoaded, lastWorkspacePath]);
+
+  // ─── Bridge: persist workspace path to global config ─────────────
+  useEffect(() => {
+    if (workspacePath) saveWorkspacePath(workspacePath);
+  }, [workspacePath]);
 
   // ─── Conversations ────────────────────────────────────────────────
   const conv = useConversations(workspacePath);

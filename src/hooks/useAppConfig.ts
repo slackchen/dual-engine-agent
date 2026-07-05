@@ -27,10 +27,14 @@ export interface AppConfig {
   maxSteps: number; setMaxSteps: (v: number) => void;
   isLoadingModels: boolean; setIsLoadingModels: (v: boolean) => void;
 
-  workspacePath: string; setWorkspacePath: (v: string) => void;
   showHiddenFiles: boolean; setShowHiddenFiles: (v: boolean) => void;
 
+  /** The last workspace path restored from persisted config — for startup auto-open */
+  lastWorkspacePath: string;
   isGlobalLoaded: boolean;
+
+  /** Call this with the live workspacePath so it gets persisted to global-config.json */
+  saveWorkspacePath: (path: string) => void;
 }
 
 export function useAppConfig(): AppConfig {
@@ -56,9 +60,13 @@ export function useAppConfig(): AppConfig {
   const [maxSteps, setMaxSteps] = useState(20);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
 
-  const [workspacePath, setWorkspacePath] = useState('');
   const [showHiddenFiles, setShowHiddenFiles] = useState(false);
   const [isGlobalLoaded, setIsGlobalLoaded] = useState(false);
+
+  /** Snapshot of last workspace path from config — used only for startup restoration */
+  const [lastWorkspacePath, setLastWorkspacePath] = useState('');
+  /** Live workspace path tracked here for persistence */
+  const [liveWorkspacePath, setLiveWorkspacePath] = useState('');
 
   // Load global config on mount
   useEffect(() => {
@@ -82,7 +90,10 @@ export function useAppConfig(): AppConfig {
           if (config.googleUrl) setGoogleUrl(config.googleUrl);
           if (config.googleAuthMethod) setGoogleAuthMethod(config.googleAuthMethod);
           if (config.googleOauthToken) setGoogleOauthToken(config.googleOauthToken);
-          if (config.lastWorkspacePath) setWorkspacePath(config.lastWorkspacePath);
+          if (config.lastWorkspacePath) {
+            setLastWorkspacePath(config.lastWorkspacePath);
+            setLiveWorkspacePath(config.lastWorkspacePath);
+          }
           if (config.showHiddenFiles !== undefined) setShowHiddenFiles(config.showHiddenFiles);
         }
         setIsGlobalLoaded(true);
@@ -101,12 +112,12 @@ export function useAppConfig(): AppConfig {
         plannerModel, workerModel, maxSteps,
         openaiUrl, sensenovaUrl, anthropicUrl, googleUrl,
         googleAuthMethod, googleOauthToken,
-        showHiddenFiles, lastWorkspacePath: workspacePath
+        showHiddenFiles, lastWorkspacePath: liveWorkspacePath
       });
     }
   }, [provider, openaiKey, sensenovaKey, anthropicKey, googleKey, plannerModel, workerModel, maxSteps,
       openaiUrl, sensenovaUrl, anthropicUrl, googleUrl, googleAuthMethod, googleOauthToken,
-      showHiddenFiles, workspacePath, isGlobalLoaded]);
+      showHiddenFiles, liveWorkspacePath, isGlobalLoaded]);
 
   return {
     provider, setProvider,
@@ -121,8 +132,9 @@ export function useAppConfig(): AppConfig {
     workerModel, setWorkerModel,
     maxSteps, setMaxSteps,
     isLoadingModels, setIsLoadingModels,
-    workspacePath, setWorkspacePath,
     showHiddenFiles, setShowHiddenFiles,
+    lastWorkspacePath,
     isGlobalLoaded,
+    saveWorkspacePath: setLiveWorkspacePath,
   };
 }
