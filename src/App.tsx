@@ -34,9 +34,13 @@ const parseReasoning = (content: string) => {
 
 function useResizer(
   initialSize: number, 
-  direction: 'right' | 'left' | 'top'
+  direction: 'right' | 'left' | 'top',
+  cssVar: string
 ) {
-  const [size, setSize] = useState(initialSize);
+  React.useEffect(() => {
+    document.documentElement.style.setProperty(cssVar, `${initialSize}px`);
+  }, []);
+
   const isResizing = useRef(false);
 
   const startResizing = useCallback((e: React.MouseEvent) => {
@@ -48,12 +52,16 @@ function useResizer(
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizing.current) return;
+      let newSize;
       if (direction === 'right') {
-        setSize(Math.max(150, Math.min(e.clientX, window.innerWidth - 400)));
+        newSize = Math.max(150, Math.min(e.clientX, window.innerWidth - 400));
       } else if (direction === 'left') {
-        setSize(Math.max(250, Math.min(window.innerWidth - e.clientX, window.innerWidth - 300)));
+        newSize = Math.max(250, Math.min(window.innerWidth - e.clientX, window.innerWidth - 300));
       } else if (direction === 'top') {
-        setSize(Math.max(100, Math.min(window.innerHeight - e.clientY, window.innerHeight - 200)));
+        newSize = Math.max(100, Math.min(window.innerHeight - e.clientY, window.innerHeight - 200));
+      }
+      if (newSize) {
+        document.documentElement.style.setProperty(cssVar, `${newSize}px`);
       }
     };
     const handleMouseUp = () => {
@@ -68,9 +76,9 @@ function useResizer(
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [direction]);
+  }, [direction, cssVar]);
 
-  return { size, startResizing };
+  return { startResizing };
 }
 
 function App() {
