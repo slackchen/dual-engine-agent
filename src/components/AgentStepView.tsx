@@ -10,7 +10,7 @@ interface AgentStepViewProps {
   openTabs: string[];
   setOpenTabs: React.Dispatch<React.SetStateAction<string[]>>;
   setActiveTab: React.Dispatch<React.SetStateAction<string>>;
-  setDiffState: React.Dispatch<React.SetStateAction<{original: string, modified: string} | null>>;
+  setDiffState: React.Dispatch<React.SetStateAction<{original: string, modified: string, startLine?: number} | null>>;
 }
 
 export function AgentStepView({ step, idx, mergedSteps, msg, openTabs, setOpenTabs, setActiveTab, setDiffState }: AgentStepViewProps) {

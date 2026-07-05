@@ -287,7 +287,7 @@ function App() {
   const editorRef = useRef<any>(null);
   const decorationsRef = useRef<any>(null);
   const [highlightRange, setHighlightRange] = useState<{startLine: number, endLine: number} | null>(null);
-  const [diffState, setDiffState] = useState<{original: string, modified: string} | null>(null);
+  const [diffState, setDiffState] = useState<{original: string, modified: string, startLine?: number} | null>(null);
   const [isRunning, setIsRunning] = useState(false);
 
   const hasLoadedHistory = useRef(false);
@@ -296,8 +296,12 @@ function App() {
     const container = document.querySelector('.chat-messages');
     if (!container) return;
     
-    // Robust native scrolling on the container itself
-    container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    // Check if user is currently near the bottom (within 150px)
+    const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 150;
+    
+    if (isAtBottom) {
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    }
     
     if (!hasLoadedHistory.current && messages.length > 0) {
       hasLoadedHistory.current = true;
@@ -389,8 +393,9 @@ function App() {
         });
         setActiveTab(data.filePath);
         if (data.isEdit && data.oldContent && data.newContent) {
-          setDiffState({ original: data.oldContent, modified: data.newContent });
-          setTimeout(() => setDiffState(null), 5000);
+          // Open diff state automatically and don't automatically close it!
+          setDiffState({ original: data.oldContent, modified: data.newContent, startLine: data.startLine });
+          // Optional: we can remove the 5000ms timeout so the diff stays open for review.
         } else if (data.range) {
           setHighlightRange(data.range);
         }
@@ -995,6 +1000,14 @@ function App() {
                   readOnly: true,
                   renderSideBySide: true,
                   enableSplitViewResizing: true
+                }}
+                onMount={(editor) => {
+                  if (diffState.startLine) {
+                    setTimeout(() => {
+                      editor.getModifiedEditor().revealLineInCenter(diffState.startLine as number);
+                      editor.getOriginalEditor().revealLineInCenter(diffState.startLine as number);
+                    }, 100);
+                  }
                 }}
               />
             </>

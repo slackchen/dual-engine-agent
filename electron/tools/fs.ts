@@ -131,9 +131,7 @@ export function createFSTools(
             // Calculate exact match line range
             const preMatch = normalizedOld.substring(0, normalizedOld.indexOf(normalizedTarget));
             const startLine = preMatch.split('\n').length;
-            const newReplacementLines = replacementContent.replace(/\r\n/g, '\n').split('\n').length;
-            const targetContentLines = normalizedTarget.split('\n').length;
-            const endLine = startLine + newReplacementLines - 1;
+                                    const endLine = startLine + newReplacementLines - 1;
             
             const newContent = normalizedOld.replace(normalizedTarget, replacementContent.replace(/\r\n/g, '\n'));
             fs.writeFileSync(fullPath, newContent, 'utf8');
@@ -141,7 +139,8 @@ export function createFSTools(
             onFileUpdated(fullPath, { startLine, endLine, oldContent, newContent, isEdit: true });
             const actualOldContentBlock = normalizedTarget;
             const actualNewContentBlock = replacementContent.replace(/\r\n/g, '\n');
-            return { success: true, message: `Successfully updated ${filePath}`, linesAdded: newReplacementLines, linesRemoved: targetContentLines, actualOldContent: actualOldContentBlock, actualNewContent: actualNewContentBlock };
+            const diff = calculateLineDiff(actualOldContentBlock, actualNewContentBlock);
+            return { success: true, message: `Successfully updated ${filePath}`, linesAdded: diff.added, linesRemoved: diff.removed, actualOldContent: actualOldContentBlock, actualNewContent: actualNewContentBlock };
           }
 
           // Fallback: Fuzzy matcher (ignores indentation AND empty lines)
@@ -202,7 +201,8 @@ export function createFSTools(
           fs.writeFileSync(fullPath, newContent, 'utf8');
           onLog(`\n> ✂️ Edited file: ${filePath} (Fuzzy match applied)\n`);
           onFileUpdated(fullPath, { startLine: matchStartIndex + 1, endLine: matchStartIndex + adjustedReplacementLines.length, oldContent, newContent, isEdit: true });
-          return { success: true, message: `Successfully updated ${filePath}`, linesAdded: adjustedReplacementLines.length, linesRemoved: removeCount, actualOldContent: actualOldContentBlock, actualNewContent: actualNewContentBlock };
+          const diff = calculateLineDiff(actualOldContentBlock, actualNewContentBlock);
+          return { success: true, message: `Successfully updated ${filePath}`, linesAdded: diff.added, linesRemoved: diff.removed, actualOldContent: actualOldContentBlock, actualNewContent: actualNewContentBlock };
         } catch (e: any) {
           return { success: false, error: e.message };
         }

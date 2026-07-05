@@ -10,7 +10,7 @@ interface ToolCallViewProps {
   openTabs: string[];
   setOpenTabs: React.Dispatch<React.SetStateAction<string[]>>;
   setActiveTab: React.Dispatch<React.SetStateAction<string>>;
-  setDiffState: React.Dispatch<React.SetStateAction<{original: string, modified: string} | null>>;
+  setDiffState: React.Dispatch<React.SetStateAction<{original: string, modified: string, startLine?: number} | null>>;
 }
 
 export function ToolCallView({ act, res, msg, idx, mergedSteps, openTabs, setOpenTabs, setActiveTab, setDiffState }: ToolCallViewProps) {
