@@ -117,8 +117,12 @@ export class WorkerEngine {
                  filePath: resObj?.filePath,
                  displayPath: resObj?.displayPath,
                  content: resObj?.content,
+                 startLine: resObj?.startLine,
+                 endLine: resObj?.endLine,
                  linesAdded: resObj?.linesAdded,
-                 linesRemoved: resObj?.linesRemoved
+                 linesRemoved: resObj?.linesRemoved,
+                 actualOldContent: resObj?.actualOldContent,
+                 actualNewContent: resObj?.actualNewContent
                }
              }) : []
           };

@@ -141,7 +141,7 @@ export function createFSTools(
           onLog(`\n> 📝 Wrote file: ${filePath}\n`);
           const numLines = content ? content.split('\n').length : 0;
           onFileUpdated(fullPath, { startLine: 1, endLine: numLines, oldContent: '', newContent: content, isEdit: false });
-          return { success: true, message: `File ${filePath} written.`, filePath: fullPath, displayPath: filePath, linesAdded: numLines, linesRemoved: oldLinesCount, actualOldContent: oldContentStr, actualNewContent: content };
+          return { success: true, message: `File ${filePath} written.`, filePath: fullPath, displayPath: filePath, startLine: 1, endLine: numLines, linesAdded: numLines, linesRemoved: oldLinesCount, actualOldContent: oldContentStr, actualNewContent: content };
         } catch (e: any) {
           return { success: false, error: e.message };
         }
@@ -187,7 +187,7 @@ export function createFSTools(
           onLog(`\n> ✨ Created file: ${filePath}\n`);
           const numLines = content ? content.split('\n').length : 0;
           onFileUpdated(fullPath, { startLine: 1, endLine: numLines, oldContent: '', newContent: content, isEdit: false });
-          return { success: true, message: `File ${filePath} created.`, filePath: fullPath, displayPath: filePath, linesAdded: numLines, linesRemoved: 0, actualOldContent: '', actualNewContent: content };
+          return { success: true, message: `File ${filePath} created.`, filePath: fullPath, displayPath: filePath, startLine: 1, endLine: numLines, linesAdded: numLines, linesRemoved: 0, actualOldContent: '', actualNewContent: content };
         } catch (e: any) {
           return { success: false, error: e.message };
         }
@@ -252,7 +252,7 @@ export function createFSTools(
             const actualOldContentBlock = normalizedTarget;
             const actualNewContentBlock = replacementContent.replace(/\r\n/g, '\n');
             const diff = calculateLineDiff(actualOldContentBlock, actualNewContentBlock);
-            return { success: true, message: `Successfully updated ${filePath}`, filePath: fullPath, displayPath: filePath, linesAdded: diff.added, linesRemoved: diff.removed, actualOldContent: actualOldContentBlock, actualNewContent: actualNewContentBlock };
+            return { success: true, message: `Successfully updated ${filePath}`, filePath: fullPath, displayPath: filePath, startLine, endLine, linesAdded: diff.added, linesRemoved: diff.removed, actualOldContent: actualOldContentBlock, actualNewContent: actualNewContentBlock };
           }
 
           // Fallback: Fuzzy matcher (ignores indentation AND empty lines)
@@ -324,7 +324,7 @@ export function createFSTools(
           onLog(`\n> ✂️ Edited file: ${filePath} (Fuzzy match applied)\n`);
           onFileUpdated(fullPath, { startLine: matchStartIndex + 1, endLine: matchStartIndex + adjustedReplacementLines.length, oldContent, newContent, isEdit: true });
           const diff = calculateLineDiff(actualOldContentBlock, actualNewContentBlock);
-          return { success: true, message: `Successfully updated ${filePath}`, filePath: fullPath, displayPath: filePath, linesAdded: diff.added, linesRemoved: diff.removed, actualOldContent: actualOldContentBlock, actualNewContent: actualNewContentBlock };
+          return { success: true, message: `Successfully updated ${filePath}`, filePath: fullPath, displayPath: filePath, startLine: matchStartIndex + 1, endLine: matchStartIndex + adjustedReplacementLines.length, linesAdded: diff.added, linesRemoved: diff.removed, actualOldContent: actualOldContentBlock, actualNewContent: actualNewContentBlock };
         } catch (e: any) {
           return { success: false, error: e.message };
         }

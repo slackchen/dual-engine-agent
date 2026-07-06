@@ -74,7 +74,7 @@ export function ToolCallView({ act, res, msg, idx, mergedSteps, openTabs, setOpe
                     // Use strict standard fields (backend execution ground truth first, fallback to strict LLM args)
                     const orig = res?.actualOldContent ?? act.args.targetContent ?? '';
                     const mod = res?.actualNewContent ?? act.args.replacementContent ?? act.args.content ?? '';
-                    setDiffState({ original: orig, modified: mod });
+                    setDiffState({ original: orig, modified: mod, startLine: res?.startLine });
                   }}
                 >
                   ✏️ View Edit (+{res.linesAdded} / -{res.linesRemoved} lines)

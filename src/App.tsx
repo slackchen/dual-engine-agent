@@ -298,7 +298,7 @@ function App() {
     const handleActiveFileUpdate = (_event: any, data: any) => {
       if (data.filePath === activeTab || data.filePath.endsWith(activeTab)) {
         if (data.isEdit && data.oldContent && data.newContent) {
-          setDiffState({ original: data.oldContent, modified: data.newContent });
+          setDiffState({ original: data.oldContent, modified: data.newContent, startLine: data.startLine });
           setTimeout(() => setDiffState(null), 5000);
         }
         loadContent();
@@ -625,6 +625,7 @@ function App() {
                 <button onClick={() => setDiffState(null)} style={{ marginLeft: 'auto', background: 'transparent', border: '1px solid #3c3c3c', color: '#aaa', borderRadius: '4px', cursor: 'pointer', padding: '2px 8px', fontSize: '11px' }}>✕ Close Diff</button>
               </div>
               <DiffEditor
+                key={`${activeTab}:${diffState.startLine || 1}:${diffState.modified.length}`}
                 height="100%"
                 language="javascript"
                 theme="vs-dark"
