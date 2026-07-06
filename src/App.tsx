@@ -36,10 +36,10 @@ const parseReasoning = (content: string) => {
   return { reasoning: '', finalContent: content };
 };
 
-const ApiCallsBadge = ({ count }: { count: number }) => (
+const ApiCallsBadge = ({ count, plannerCount = 0, workerCount = 0, showBreakdown = false }: { count: number; plannerCount?: number; workerCount?: number; showBreakdown?: boolean }) => (
   <span style={{ backgroundColor: 'var(--bg-secondary)', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
     <span aria-hidden="true">🤖</span>
-    API Calls: {count}
+    API Calls: {count}{showBreakdown ? ` (Planner ${plannerCount} / Worker ${workerCount})` : ''}
   </span>
 );
 
@@ -50,6 +50,17 @@ const formatElapsed = (startedAt: number, now: number) => {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+};
+
+const getApiCallBreakdown = (msg: { apiCallCount?: number; plannerApiCallCount?: number; workerApiCallCount?: number }) => {
+  const total = msg.apiCallCount || 0;
+  const hasBreakdown = typeof msg.plannerApiCallCount === 'number' || typeof msg.workerApiCallCount === 'number';
+  return {
+    total,
+    planner: msg.plannerApiCallCount || 0,
+    worker: msg.workerApiCallCount || 0,
+    hasBreakdown,
+  };
 };
 
 const filterModelsForProvider = (providerConfig: ProviderConfig, models: string[]) => {
@@ -372,6 +383,11 @@ function App() {
           targetMsg.content += `### 🤖 Task Result\n${resultText}\n\n`;
         } else if (data.type === 'api-call') {
           targetMsg.apiCallCount = (targetMsg.apiCallCount || 0) + 1;
+          if (data.data === 'planner') {
+            targetMsg.plannerApiCallCount = (targetMsg.plannerApiCallCount || 0) + 1;
+          } else if (data.data === 'worker') {
+            targetMsg.workerApiCallCount = (targetMsg.workerApiCallCount || 0) + 1;
+          }
         } else if (data.type === 'agent-step') {
           targetMsg.modelWaitStartedAt = null;
           targetMsg.agentSteps = [...(targetMsg.agentSteps || []), data.data];
@@ -422,7 +438,7 @@ function App() {
       } catch (err: any) {
         if (cancelled) return;
         console.error(err);
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'ai', content: `⚠️ **[System Error]** Failed to fetch models: ${err.message}`, statusLogs: [], agentSteps: [], apiCallCount: 0, isComplete: true }]);
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'ai', content: `⚠️ **[System Error]** Failed to fetch models: ${err.message}`, statusLogs: [], agentSteps: [], apiCallCount: 0, plannerApiCallCount: 0, workerApiCallCount: 0, isComplete: true }]);
       } finally {
         if (!cancelled) {
           setLoadingModelsByConfigId(prev => ({ ...prev, [providerConfig.id]: false }));
@@ -455,7 +471,7 @@ function App() {
 
   // ─── OAuth ────────────────────────────────────────────────────────
   const addSystemMsg = (content: string) =>
-    setMessages(prev => [...prev, { id: Date.now().toString(), role: 'ai', content, statusLogs: [], agentSteps: [], apiCallCount: 0, isComplete: true }]);
+    setMessages(prev => [...prev, { id: Date.now().toString(), role: 'ai', content, statusLogs: [], agentSteps: [], apiCallCount: 0, plannerApiCallCount: 0, workerApiCallCount: 0, isComplete: true }]);
 
   const handleOAuthLogin = async () => {
     try {
@@ -487,8 +503,8 @@ function App() {
     scrollTerminalToBottom();
     setMessages(prev => [
       ...prev,
-      { id: crypto.randomUUID(), role: 'user', content: userTask, statusLogs: [], agentSteps: [], apiCallCount: 0, isComplete: true },
-      { id: newAiMsgId, role: 'ai', content: '', statusLogs: ['Initializing Agent...'], agentSteps: [], apiCallCount: 0, isComplete: false }
+      { id: crypto.randomUUID(), role: 'user', content: userTask, statusLogs: [], agentSteps: [], apiCallCount: 0, plannerApiCallCount: 0, workerApiCallCount: 0, isComplete: true },
+      { id: newAiMsgId, role: 'ai', content: '', statusLogs: ['Initializing Agent...'], agentSteps: [], apiCallCount: 0, plannerApiCallCount: 0, workerApiCallCount: 0, isComplete: false }
     ]);
 
     const chatHistory = messages
@@ -707,9 +723,10 @@ function App() {
                 {msg.role === 'ai' && (
                   <div className="message-header" style={{display: 'flex', justifyContent: 'space-between'}}>
                     <span>Dual-Engine Agent</span>
-                    {msg.apiCallCount > 0 && (
-                      <ApiCallsBadge count={msg.apiCallCount} />
-                    )}
+                    {msg.apiCallCount > 0 && (() => {
+                      const calls = getApiCallBreakdown(msg);
+                      return <ApiCallsBadge count={calls.total} plannerCount={calls.planner} workerCount={calls.worker} showBreakdown={calls.hasBreakdown} />;
+                    })()}
                   </div>
                 )}
 
@@ -824,7 +841,10 @@ function App() {
 
                 {msg.role === 'ai' && msg.apiCallCount > 0 && messageExceedsViewport[msg.id] && (
                   <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px' }}>
-                    <ApiCallsBadge count={msg.apiCallCount} />
+                    {(() => {
+                      const calls = getApiCallBreakdown(msg);
+                      return <ApiCallsBadge count={calls.total} plannerCount={calls.planner} workerCount={calls.worker} showBreakdown={calls.hasBreakdown} />;
+                    })()}
                   </div>
                 )}
               </div>

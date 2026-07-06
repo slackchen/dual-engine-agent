@@ -121,11 +121,15 @@ export function createShellTools(
               output += trailingStderr;
             }
 
-            if (code === 0) {
-              finish({ success: true, message: output });
-            } else {
-              finish({ success: false, error: `Command failed with exit code ${code}\n${output}` });
-            }
+            const exitCode = code ?? 0;
+            finish({
+              success: true,
+              commandSuccess: exitCode === 0,
+              exitCode,
+              message: exitCode === 0
+                ? output
+                : `Command exited with code ${exitCode}.\n${output}`,
+            });
           });
 
           child.on('error', (error) => {

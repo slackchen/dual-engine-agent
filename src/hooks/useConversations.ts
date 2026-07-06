@@ -8,6 +8,8 @@ const INIT_MESSAGE: Message = {
   statusLogs: [],
   agentSteps: [],
   apiCallCount: 0,
+  plannerApiCallCount: 0,
+  workerApiCallCount: 0,
   isComplete: true,
 };
 

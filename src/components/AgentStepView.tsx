@@ -46,10 +46,12 @@ export function AgentStepView({ step, idx, mergedSteps, msg, openTabs, setOpenTa
         const isCmd = act.toolName === 'runCommand' || act.toolName === 'run_command' || act.toolName === 'executeCommand';
         const isBrowser = act.toolName === 'openBrowser';
         const isReadFile = act.toolName === 'readFile' || act.toolName === 'viewFile';
+        const isLaunchApp = act.toolName === 'launchApp' || act.toolName === 'openExecutable';
+        const isCommandNonZero = isCmd && res?.success && res?.commandSuccess === false;
 
         return (
           <div key={actIdx} style={{ background: '#252526', borderRadius: '4px', border: '1px solid #3c3c3c', marginTop: '4px', overflow: 'hidden' }}>
-            <div style={{ padding: '6px 10px', background: isFileMod ? 'rgba(76, 175, 80, 0.1)' : isCmd ? 'rgba(33, 150, 243, 0.1)' : isReadFile ? 'rgba(255, 152, 0, 0.1)' : '#2d2d2d', borderBottom: '1px solid #3c3c3c', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ padding: '6px 10px', background: isFileMod ? 'rgba(76, 175, 80, 0.1)' : isCmd || isLaunchApp ? 'rgba(33, 150, 243, 0.1)' : isReadFile ? 'rgba(255, 152, 0, 0.1)' : '#2d2d2d', borderBottom: '1px solid #3c3c3c', display: 'flex', alignItems: 'center', gap: '8px' }}>
               <span>
                 {isFileMod ? (act.toolName === 'createFile' ? '✨' : '✏️') : isCmd ? '🖥️' : isBrowser ? '🌐' : isReadFile ? '📖' : '🔧'}
               </span>
@@ -120,12 +122,17 @@ export function AgentStepView({ step, idx, mergedSteps, msg, openTabs, setOpenTa
                   if (isBrowser) {
                     return 'Opening Browser';
                   }
+                  if (isLaunchApp) {
+                    const appPath = act.args?.filePath || act.args?.path || act.args?.executablePath || res?.displayPath || res?.filePath || 'app';
+                    const fileName = String(appPath).split(/[/\\]/).pop();
+                    return <>Launching <span style={{ color: '#DCDCAA', fontFamily: 'monospace' }} title={appPath}>{fileName}</span></>;
+                  }
                   return act.toolName;
                 })()}
               </span>
               {res && (
-                <span style={{ marginLeft: 'auto', color: res.success ? '#4CAF50' : (msg.isComplete && idx === mergedSteps.length - 1) ? '#F44336' : '#FFC107' }}>
-                  {res.success ? '✅' : (msg.isComplete && idx === mergedSteps.length - 1) ? '❌ Failed' : '⚠️ Retrying'}
+                <span style={{ marginLeft: 'auto', color: isCommandNonZero ? '#FFC107' : res.success ? '#4CAF50' : (msg.isComplete && idx === mergedSteps.length - 1) ? '#F44336' : '#FFC107' }}>
+                  {isCommandNonZero ? `Exit ${res.exitCode ?? ''}` : res.success ? '✅' : (msg.isComplete && idx === mergedSteps.length - 1) ? '❌ Failed' : '⚠️ Retrying'}
                 </span>
               )}
             </div>

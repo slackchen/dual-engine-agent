@@ -6,6 +6,22 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createFSTools } from './tools/fs';
 import { createShellTools } from './tools/shell';
 import { createBrowserTools } from './tools/browser';
+import { createAppTools } from './tools/app';
+import type { RequiredTool } from './planner';
+
+const HARD_STEP_LIMIT = 100;
+const MIN_TOOL_STEP_LIMIT = 6;
+const SAME_TOOL_FAILURE_LOOP_LIMIT = 4;
+
+function getStepToolResults(step: any) {
+  if (Array.isArray(step?.toolResults)) return step.toolResults;
+  if (Array.isArray(step?.results)) return step.results;
+  return [];
+}
+
+function getToolResultPayload(result: any) {
+  return result?.output ?? result?.result ?? result;
+}
 
 export class WorkerEngine {
   public async executeTask(
@@ -23,6 +39,7 @@ export class WorkerEngine {
     baseUrl: string,
     chatHistory: any[],
     maxSteps: number,
+    requiredTool?: RequiredTool,
     abortSignal?: AbortSignal
   ): Promise<string> {
     if (!workspacePath) {
@@ -61,15 +78,35 @@ export class WorkerEngine {
     }
 
     try {
+      let stopReason: string | null = null;
+      const configuredMaxSteps = Number.isFinite(maxSteps) ? maxSteps : 20;
+      const hardStepLimit = Math.min(Math.max(configuredMaxSteps, MIN_TOOL_STEP_LIMIT), HARD_STEP_LIMIT);
+      const plannerControlledMode = !!requiredTool;
+
       const { text } = await generateText({
         model,
         abortSignal,
+        prepareStep: ({ stepNumber }) => (
+          stepNumber === 0
+            ? requiredTool
+              ? { toolChoice: { type: 'tool' as const, toolName: requiredTool as any } }
+              : { toolChoice: 'required' as const }
+            : undefined
+        ),
         stopWhen: ({ steps }) => {
+          if (plannerControlledMode && steps.length >= 1) {
+            stopReason = `Completed required ${requiredTool} tool action.`;
+            return true;
+          }
+
           // Hard safety limit for total steps per subtask to prevent infinite loops
-          if (steps.length >= 100) return true;
+          if (steps.length >= hardStepLimit) {
+            stopReason = `Stopped after reaching the tool step limit (${hardStepLimit}).`;
+            return true;
+          }
 
           // Check if the LLM is stuck in a retry loop for the same tool
-          const retryLimit = maxSteps || 5;
+          const retryLimit = SAME_TOOL_FAILURE_LOOP_LIMIT;
           if (steps.length >= retryLimit) {
             const lastN = steps.slice(-retryLimit);
             
@@ -84,12 +121,16 @@ export class WorkerEngine {
             
             // Every attempt must have resulted in a failure
             const allFailed = lastN.every((s: any) => {
-              const res = s.toolResults && s.toolResults.length === 1 ? s.toolResults[0] : null;
-              const resObj = res ? (res.output ?? res.result) : null;
+              const results = getStepToolResults(s);
+              const res = results.length === 1 ? results[0] : null;
+              const resObj = res ? getToolResultPayload(res) : null;
               return resObj && resObj.success === false;
             });
             
-            if (allFailed) return true;
+            if (allFailed) {
+              stopReason = `Stopped after ${retryLimit} consecutive failed ${toolName} attempts.`;
+              return true;
+            }
           }
           
           return false;
@@ -114,6 +155,9 @@ export class WorkerEngine {
                return {
                  toolName: r.toolName,
                  success,
+                 commandSuccess: resObj?.commandSuccess,
+                 exitCode: resObj?.exitCode,
+                 pid: resObj?.pid,
                  message: resObj?.error || resObj?.message || 'Completed',
                  filePath: resObj?.filePath,
                  displayPath: resObj?.displayPath,
@@ -148,6 +192,12 @@ CRITICAL RULES:
 3. MUST use \`openBrowser\` to preview HTML or web apps. NEVER use \`open\` via \`runCommand\`.
 4. You are the Worker, not the Planner. Do not return a plan as your final answer when the subtask requires execution. Use tools to do the work, then report what you actually did.
 5. If a command fails because the syntax is for the wrong shell, immediately retry once with the correct shell syntax for this OS.
+6. A failed tool call is not the end of the task. Use the failure message to choose a different diagnostic or correction step. If you are genuinely blocked, explain the blocker in the final response instead of silently stopping.
+7. For \`runCommand\`, \`success\` means the shell tool ran. Check \`commandSuccess\`, \`exitCode\`, and \`message\` to decide whether the command itself succeeded. Non-zero exit codes can be expected for diagnostic probes.
+8. MUST use \`launchApp\` to start desktop GUI applications, compiled executables, or native games. NEVER use \`runCommand\` for long-running GUI apps because it waits for process completion.
+9. If the task asks to open, run, launch, or preview something, do not finish after only checking files or processes. Finish only after a successful \`launchApp\` for executables/native games or a successful \`openBrowser\` for web pages, unless you are blocked and explain why.
+10. If the task text includes a required tool, use that exact tool for the first action.
+11. When the task text includes a required tool, do exactly one tool action and then stop. Do not choose fallback tools, do not run diagnostics after the required tool, and do not retry with a different tool. The Planner will decide the next action from the tool result.
 
 COMMAND TOOL ARGUMENTS:
 - \`runCommand\`: use exactly \`{ "command": "..." }\`.
@@ -167,7 +217,11 @@ FILE TOOL ARGUMENTS:
 
 BROWSER TOOL ARGUMENTS:
 - \`openBrowser\`: use exactly \`{ "urlOrFilePath": "index.html" }\` for a local file, or \`{ "urlOrFilePath": "http://localhost:5173/" }\` for a web URL.
-- For local previews, prefer a workspace-relative HTML path such as \`index.html\`. Do not pass an empty object.`,
+- For local previews, prefer a workspace-relative HTML path such as \`index.html\`. Do not pass an empty object.
+
+APP TOOL ARGUMENTS:
+- \`launchApp\`: use exactly \`{ "filePath": "build/Debug/tank_battle.exe" }\` or another workspace-relative executable path.
+- Use \`launchApp\` after building a native C++/SFML game when the user asks to open, run, or launch the game.`,
         messages: [
           ...chatHistory,
           { role: 'user', content: `Task: ${taskDescription}` }
@@ -175,11 +229,12 @@ BROWSER TOOL ARGUMENTS:
         tools: {
           ...createFSTools(workspacePath, onLog, onFileUpdated),
           ...createShellTools(workspacePath, onLog),
-          ...createBrowserTools(workspacePath, onLog, onOpenBrowser)
+          ...createBrowserTools(workspacePath, onLog, onOpenBrowser),
+          ...createAppTools(workspacePath, onLog)
         }
       });
       // Return only the final text, the UI handles intermediate steps via onStep callback
-      return text || 'Subtask completed (no final text generated).';
+      return text || stopReason || 'Subtask completed (no final text generated).';
       
     } catch (err: any) {
       throw new Error(`Worker execution failed: ${err.message}`);

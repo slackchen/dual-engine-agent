@@ -12,6 +12,8 @@ export interface Message {
   statusLogs: string[];
   agentSteps: any[];
   apiCallCount: number;
+  plannerApiCallCount?: number;
+  workerApiCallCount?: number;
   isComplete?: boolean;
   plan?: any;
   modelWaitStartedAt?: number | null;

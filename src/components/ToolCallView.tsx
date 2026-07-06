@@ -82,8 +82,10 @@ function buildFullFileDiff(currentContent: string, res: any, act: any) {
 
 export function ToolCallView({ act, res, msg, idx, mergedSteps, openTabs, setOpenTabs, setActiveTab, setDiffState }: ToolCallViewProps) {
   const isCmd = act.toolName === 'runCommand' || act.toolName === 'run_command' || act.toolName === 'executeCommand';
+  const isLaunchApp = act.toolName === 'launchApp' || act.toolName === 'openExecutable';
   const isFileMod = act.toolName === 'editFileContent' || act.toolName === 'writeFile' || act.toolName === 'createFile' || act.toolName === 'multi_replace_file_content' || act.toolName === 'replace_file_content';
   const hasArgs = act.args && Object.keys(act.args).length > 0;
+  const isCommandNonZero = isCmd && res?.success && res?.commandSuccess === false;
 
   return (
     <div style={{ padding: '8px', color: '#ccc' }}>
@@ -110,6 +112,22 @@ export function ToolCallView({ act, res, msg, idx, mergedSteps, openTabs, setOpe
                 $ {act.args?.CommandLine || act.args?.command || ''}
               </pre>
             </details>
+          )}
+          {isCommandNonZero && (
+            <div style={{ marginTop: '6px', background: 'rgba(255, 193, 7, 0.1)', padding: '6px', borderRadius: '4px', fontSize: '11px', color: '#FFC107' }}>
+              <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>Command exited with code {res.exitCode}</div>
+              <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', opacity: 0.9 }}>
+                {res.message}
+              </div>
+            </div>
+          )}
+          {isLaunchApp && res?.success && (
+            <div style={{ marginTop: '6px', background: 'rgba(33, 150, 243, 0.1)', padding: '6px', borderRadius: '4px', fontSize: '11px', color: '#9CDCFE' }}>
+              <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>Launched process{res.pid ? ` PID ${res.pid}` : ''}</div>
+              <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', opacity: 0.9 }}>
+                {res.filePath || res.displayPath || res.message}
+              </div>
+            </div>
           )}
           {isFileMod && (!res || res.success) && (
             <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
@@ -147,7 +165,7 @@ export function ToolCallView({ act, res, msg, idx, mergedSteps, openTabs, setOpe
               )}
             </div>
           )}
-          {!isCmd && (
+          {!isCmd && !isLaunchApp && (
             <details>
               <summary style={{ cursor: 'pointer', fontSize: '11px', color: 'var(--text-secondary)' }}>View Details</summary>
               <pre style={{ marginTop: '6px', background: '#1e1e1e', padding: '4px', borderRadius: '4px', overflowX: 'auto', fontSize: '11px' }}>

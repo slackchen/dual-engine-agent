@@ -426,14 +426,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {activeTab === 'general' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
                 <div>
-                  <div style={{ fontWeight: 'bold', marginBottom: '5px', fontSize: '12px' }}>Max Tool Steps (Retries)</div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '5px' }}>The maximum number of sequential steps the agent can take per request.</div>
+                  <div style={{ fontWeight: 'bold', marginBottom: '5px', fontSize: '12px' }}>Max Tool Steps</div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '5px' }}>The maximum number of tool steps per request. Values below 6 are treated as 6 so failed tools still have room for recovery.</div>
                   <input
                     type="number"
-                    min={1}
+                    min={6}
                     max={50}
                     value={maxSteps}
-                    onChange={e => setMaxSteps(parseInt(e.target.value, 10) || 20)}
+                    onChange={e => setMaxSteps(Math.max(6, parseInt(e.target.value, 10) || 20))}
                     style={inputStyle}
                   />
                 </div>
