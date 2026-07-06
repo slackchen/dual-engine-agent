@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import './index.css';
 // @ts-ignore
 import Editor, { DiffEditor } from '@monaco-editor/react';
@@ -13,11 +13,12 @@ import { HistoryModal } from './components/HistoryModal';
 import { SettingsModal } from './components/SettingsModal';
 import { AgentStepView } from './components/AgentStepView';
 import { ChatInputBox } from './components/ChatInputBox';
+import { applyConverterPlugin, NO_CONVERTER_PLUGIN_ID } from './converterPlugins';
 
 
 
 import { useResizer } from './hooks/useResizer';
-import { useAppConfig } from './hooks/useAppConfig';
+import { useAppConfig, type ProviderConfig } from './hooks/useAppConfig';
 import { useWorkspace } from './hooks/useWorkspace';
 import { useConversations } from './hooks/useConversations';
 import { useFileEditor } from './hooks/useFileEditor';
@@ -42,27 +43,88 @@ const ApiCallsBadge = ({ count }: { count: number }) => (
   </span>
 );
 
+const filterModelsForProvider = (providerConfig: ProviderConfig, models: string[]) => {
+  if (providerConfig.provider === 'openai') return models;
+  if (providerConfig.provider === 'anthropic') return models.filter(m => m.includes('claude-'));
+  if (providerConfig.provider === 'google') return models.filter(m => m.includes('gemini-'));
+  return models;
+};
+
 function App() {
   // ─── Config & Provider ───────────────────────────────────────────
   const config = useAppConfig();
   const {
-    provider, setProvider,
-    openaiKey, setOpenaiKey, openaiUrl, setOpenaiUrl,
-    sensenovaKey, setSensenovaKey, sensenovaUrl, setSensenovaUrl,
-    anthropicKey, setAnthropicKey, anthropicUrl, setAnthropicUrl,
-    googleAuthMethod, setGoogleAuthMethod,
-    googleKey, setGoogleKey, googleUrl, setGoogleUrl,
-    googleOauthToken, setGoogleOauthToken,
-    availableModels, setAvailableModels,
+    providerConfigs,
+    activeProviderConfigId,
+    activeProviderConfig,
+    setActiveProviderConfigId,
+    plannerProviderConfigId,
+    setPlannerProviderConfigId,
+    workerProviderConfigId,
+    setWorkerProviderConfigId,
+    updateProviderConfig,
+    addProviderConfig,
+    deleteProviderConfig,
     plannerModel, setPlannerModel,
     workerModel, setWorkerModel,
     maxSteps, setMaxSteps,
-    isLoadingModels, setIsLoadingModels,
     showHiddenFiles, setShowHiddenFiles,
     lastWorkspacePath,
     isGlobalLoaded,
     saveWorkspacePath,
   } = config;
+
+  const getProviderRuntime = useCallback((providerConfig: ProviderConfig, modelName = '') => {
+    let tokenOrKey = providerConfig.apiKey;
+    let currentBaseUrl = providerConfig.baseUrl || '';
+    let activeProtocol = 'openai';
+    let authMethodForBackend = 'openai';
+
+    if (providerConfig.provider === 'anthropic') {
+      activeProtocol = 'anthropic';
+      authMethodForBackend = 'anthropic';
+    } else if (providerConfig.provider === 'google') {
+      const googleAuthMethod = providerConfig.googleAuthMethod || 'oauth';
+      tokenOrKey = googleAuthMethod === 'oauth'
+        ? providerConfig.googleOauthToken || ''
+        : providerConfig.apiKey;
+      activeProtocol = 'google';
+      authMethodForBackend = googleAuthMethod === 'oauth' ? 'google-oauth' : 'google-key';
+    }
+
+    if (currentBaseUrl.endsWith('/chat/completions')) currentBaseUrl = currentBaseUrl.replace('/chat/completions', '');
+    if (currentBaseUrl.endsWith('/')) currentBaseUrl = currentBaseUrl.slice(0, -1);
+
+    const runtime = {
+      config: providerConfig,
+      tokenOrKey,
+      currentBaseUrl,
+      activeProtocol,
+      authMethodForBackend,
+    };
+
+    const converterPluginId = modelName && providerConfig.modelConverterOverrides?.[modelName]
+      ? providerConfig.modelConverterOverrides[modelName]
+      : providerConfig.converterPluginId || NO_CONVERTER_PLUGIN_ID;
+
+    return applyConverterPlugin(converterPluginId, runtime);
+  }, []);
+
+  const plannerProviderConfig = useMemo(() => (
+    providerConfigs.find(providerConfig => providerConfig.id === plannerProviderConfigId) || activeProviderConfig
+  ), [activeProviderConfig, plannerProviderConfigId, providerConfigs]);
+
+  const workerProviderConfig = useMemo(() => (
+    providerConfigs.find(providerConfig => providerConfig.id === workerProviderConfigId) || activeProviderConfig
+  ), [activeProviderConfig, providerConfigs, workerProviderConfigId]);
+
+  const [modelsByConfigId, setModelsByConfigId] = useState<Record<string, string[]>>({});
+  const [loadingModelsByConfigId, setLoadingModelsByConfigId] = useState<Record<string, boolean>>({});
+
+  const plannerAvailableModels = modelsByConfigId[plannerProviderConfig.id] || [];
+  const workerAvailableModels = modelsByConfigId[workerProviderConfig.id] || [];
+  const isLoadingPlannerModels = !!loadingModelsByConfigId[plannerProviderConfig.id];
+  const isLoadingWorkerModels = !!loadingModelsByConfigId[workerProviderConfig.id];
 
   // ─── Workspace & File Tree ────────────────────────────────────────
   const workspace = useWorkspace(showHiddenFiles);
@@ -179,12 +241,38 @@ function App() {
   const [terminalLogs, setTerminalLogs] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const terminalEndRef = useRef<HTMLDivElement>(null);
+  const terminalContainerRef = useRef<HTMLDivElement>(null);
+  const terminalUserScrolledUp = useRef(false);
 
   // ─── Terminal auto-scroll ─────────────────────────────────────────
+  const handleTerminalScroll = useCallback(() => {
+    const container = terminalContainerRef.current;
+    if (!container) return;
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const distFromBottom = scrollHeight - scrollTop - clientHeight;
+    terminalUserScrolledUp.current = distFromBottom > 120;
+  }, []);
+
+  const scrollTerminalToBottom = useCallback(() => {
+    const container = terminalContainerRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+  }, []);
+
   useEffect(() => {
-    terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [terminalLogs]);
+    if (terminalUserScrolledUp.current) return;
+
+    let secondFrame = 0;
+    const firstFrame = requestAnimationFrame(() => {
+      scrollTerminalToBottom();
+      secondFrame = requestAnimationFrame(scrollTerminalToBottom);
+    });
+
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      if (secondFrame) cancelAnimationFrame(secondFrame);
+    };
+  }, [scrollTerminalToBottom, terminalLogs]);
 
   // ─── Auto-scroll active tab into view ────────────────────────────
   useEffect(() => {
@@ -282,42 +370,59 @@ function App() {
 
   // ─── Fetch available models ───────────────────────────────────────
   useEffect(() => {
-    const fetchModels = async () => {
-      let tokenOrKey = '';
-      let currentBaseUrl = '';
-      let activeProtocol = 'openai';
-      let authMethodForBackend = 'openai';
-      if (provider === 'openai') { tokenOrKey = openaiKey; currentBaseUrl = openaiUrl; }
-      else if (provider === 'sensenova') { tokenOrKey = sensenovaKey; currentBaseUrl = sensenovaUrl; }
-      else if (provider === 'anthropic') { tokenOrKey = anthropicKey; currentBaseUrl = anthropicUrl; activeProtocol = 'anthropic'; authMethodForBackend = 'anthropic'; }
-      else if (provider === 'google') {
-        tokenOrKey = googleAuthMethod === 'oauth' ? googleOauthToken : googleKey;
-        currentBaseUrl = googleUrl; activeProtocol = 'google';
-        authMethodForBackend = googleAuthMethod === 'oauth' ? 'google-oauth' : 'google-key';
+    let cancelled = false;
+    const configsToLoad = providerConfigs.filter((providerConfig, index, arr) => (
+      arr.findIndex(item => item.id === providerConfig.id) === index
+    ));
+
+    const fetchModels = async (providerConfig: ProviderConfig) => {
+      const { tokenOrKey, currentBaseUrl, activeProtocol, authMethodForBackend } = getProviderRuntime(providerConfig);
+      if (!tokenOrKey) {
+        setModelsByConfigId(prev => ({ ...prev, [providerConfig.id]: [] }));
+        setLoadingModelsByConfigId(prev => ({ ...prev, [providerConfig.id]: false }));
+        return;
       }
-      if (currentBaseUrl.endsWith('/chat/completions')) currentBaseUrl = currentBaseUrl.replace('/chat/completions', '');
-      if (currentBaseUrl.endsWith('/')) currentBaseUrl = currentBaseUrl.slice(0, -1);
-      if (!tokenOrKey) { setAvailableModels([]); return; }
-      setIsLoadingModels(true);
+
+      setLoadingModelsByConfigId(prev => ({ ...prev, [providerConfig.id]: true }));
       try {
         // @ts-ignore
         const models: string[] = await window.ipcRenderer.invoke('agent:get-models', { protocol: activeProtocol, authMethod: authMethodForBackend, tokenOrKey, baseUrl: currentBaseUrl });
-        let filtered = models;
-        if (provider === 'openai') filtered = models.filter(m => m.includes('gpt-') || m.includes('o1') || m.includes('o3'));
-        else if (provider === 'anthropic') filtered = models.filter(m => m.includes('claude-'));
-        else if (provider === 'google') filtered = models.filter(m => m.includes('gemini-'));
-        setAvailableModels(filtered.length > 0 ? filtered : models);
-        if (filtered.length > 0) {
-          if (!plannerModel || !filtered.includes(plannerModel)) setPlannerModel(filtered[0]);
-          if (!workerModel || !filtered.includes(workerModel)) setWorkerModel(filtered[filtered.length - 1] || filtered[0]);
-        }
+        if (cancelled) return;
+        const filtered = filterModelsForProvider(providerConfig, models);
+        setModelsByConfigId(prev => ({ ...prev, [providerConfig.id]: filtered.length > 0 ? filtered : models }));
       } catch (err: any) {
+        if (cancelled) return;
         console.error(err);
         setMessages(prev => [...prev, { id: Date.now().toString(), role: 'ai', content: `⚠️ **[System Error]** Failed to fetch models: ${err.message}`, statusLogs: [], agentSteps: [], apiCallCount: 0, isComplete: true }]);
-      } finally { setIsLoadingModels(false); }
+      } finally {
+        if (!cancelled) {
+          setLoadingModelsByConfigId(prev => ({ ...prev, [providerConfig.id]: false }));
+        }
+      }
     };
-    setTimeout(fetchModels, 1000);
-  }, [provider, openaiKey, sensenovaKey, anthropicKey, googleKey, googleOauthToken, googleAuthMethod, openaiUrl, sensenovaUrl, anthropicUrl, googleUrl]);
+    const timer = window.setTimeout(() => {
+      configsToLoad.forEach(providerConfig => {
+        fetchModels(providerConfig);
+      });
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [getProviderRuntime, providerConfigs, setMessages]);
+
+  useEffect(() => {
+    if (plannerAvailableModels.length > 0 && (!plannerModel || !plannerAvailableModels.includes(plannerModel))) {
+      setPlannerModel(plannerAvailableModels[0]);
+    }
+  }, [plannerAvailableModels, plannerModel, setPlannerModel]);
+
+  useEffect(() => {
+    if (workerAvailableModels.length > 0 && (!workerModel || !workerAvailableModels.includes(workerModel))) {
+      setWorkerModel(workerAvailableModels[workerAvailableModels.length - 1] || workerAvailableModels[0]);
+    }
+  }, [setWorkerModel, workerAvailableModels, workerModel]);
 
   // ─── OAuth ────────────────────────────────────────────────────────
   const addSystemMsg = (content: string) =>
@@ -328,38 +433,29 @@ function App() {
       addSystemMsg('[System] Opening browser for Google OAuth login...');
       // @ts-ignore
       const token = await window.ipcRenderer.invoke('agent:login-oauth');
-      setGoogleOauthToken(token);
+      updateProviderConfig(activeProviderConfig.id, { googleOauthToken: token });
       addSystemMsg('[System] Google OAuth login successful!');
     } catch (err: any) { addSystemMsg(`[System Error] OAuth login failed: ${err.message}`); }
   };
 
   const handleLogout = () => {
-    setGoogleOauthToken('');
-    setAvailableModels([]);
+    updateProviderConfig(activeProviderConfig.id, { googleOauthToken: '' });
+    setModelsByConfigId(prev => ({ ...prev, [activeProviderConfig.id]: [] }));
     addSystemMsg('[System] Logged out successfully. Token cleared.');
   };
 
   // ─── Send message ─────────────────────────────────────────────────
   const handleSend = async (userTask: string) => {
     if (!userTask.trim()) return;
-    let tokenOrKey = '';
-    let currentBaseUrl = '';
-    let activeProtocol = 'openai';
-    let authMethodForBackend = 'openai';
-    if (provider === 'openai') { tokenOrKey = openaiKey; currentBaseUrl = openaiUrl; }
-    else if (provider === 'sensenova') { tokenOrKey = sensenovaKey; currentBaseUrl = sensenovaUrl; }
-    else if (provider === 'anthropic') { tokenOrKey = anthropicKey; currentBaseUrl = anthropicUrl; activeProtocol = 'anthropic'; authMethodForBackend = 'anthropic'; }
-    else if (provider === 'google') {
-      tokenOrKey = googleAuthMethod === 'oauth' ? googleOauthToken : googleKey;
-      currentBaseUrl = googleUrl; activeProtocol = 'google';
-      authMethodForBackend = googleAuthMethod === 'oauth' ? 'google-oauth' : 'google-key';
-    }
-    if (currentBaseUrl.endsWith('/chat/completions')) currentBaseUrl = currentBaseUrl.replace('/chat/completions', '');
-    if (currentBaseUrl.endsWith('/')) currentBaseUrl = currentBaseUrl.slice(0, -1);
-    if (!tokenOrKey) { alert(`Please configure your ${provider} credentials first!`); return; }
+    const plannerRuntime = getProviderRuntime(plannerProviderConfig, plannerModel);
+    const workerRuntime = getProviderRuntime(workerProviderConfig, workerModel);
+    if (!plannerRuntime.tokenOrKey) { alert(`Please configure credentials for ${plannerProviderConfig.name} first!`); return; }
+    if (!workerRuntime.tokenOrKey) { alert(`Please configure credentials for ${workerProviderConfig.name} first!`); return; }
 
     const newAiMsgId = crypto.randomUUID();
     resetScrollPosition();
+    terminalUserScrolledUp.current = false;
+    scrollTerminalToBottom();
     setMessages(prev => [
       ...prev,
       { id: crypto.randomUUID(), role: 'user', content: userTask, statusLogs: [], agentSteps: [], apiCallCount: 0, isComplete: true },
@@ -386,7 +482,31 @@ function App() {
     setIsRunning(true);
     try {
       // @ts-ignore
-      const result = await window.ipcRenderer.invoke('agent:run-task', { protocol: activeProtocol, authMethod: authMethodForBackend, tokenOrKey, plannerModel, workerModel, maxSteps, task: userTask, workspacePath, baseUrl: currentBaseUrl, chatHistory, runId: newAiMsgId });
+      const result = await window.ipcRenderer.invoke('agent:run-task', {
+        protocol: plannerRuntime.activeProtocol,
+        authMethod: plannerRuntime.authMethodForBackend,
+        tokenOrKey: plannerRuntime.tokenOrKey,
+        baseUrl: plannerRuntime.currentBaseUrl,
+        plannerConfig: {
+          protocol: plannerRuntime.activeProtocol,
+          authMethod: plannerRuntime.authMethodForBackend,
+          tokenOrKey: plannerRuntime.tokenOrKey,
+          baseUrl: plannerRuntime.currentBaseUrl,
+        },
+        workerConfig: {
+          protocol: workerRuntime.activeProtocol,
+          authMethod: workerRuntime.authMethodForBackend,
+          tokenOrKey: workerRuntime.tokenOrKey,
+          baseUrl: workerRuntime.currentBaseUrl,
+        },
+        plannerModel,
+        workerModel,
+        maxSteps,
+        task: userTask,
+        workspacePath,
+        chatHistory,
+        runId: newAiMsgId,
+      });
       setMessages(prev => {
         const n = [...prev];
         if (!n.length) return prev;
@@ -534,10 +654,9 @@ function App() {
           )}
         </div>
         <div className="resizer-vertical" onMouseDown={startResizingTerminal} />
-        <div className="terminal-container" style={{ height: 'var(--terminal-height)', backgroundColor: '#1e1e1e', color: '#cccccc', padding: '10px', overflowY: 'auto', borderTop: '1px solid var(--border-color)', fontFamily: 'monospace', fontSize: '12px', whiteSpace: 'pre-wrap', flexShrink: 0 }}>
+        <div ref={terminalContainerRef} onScroll={handleTerminalScroll} className="terminal-container" style={{ height: 'var(--terminal-height)', backgroundColor: '#1e1e1e', color: '#cccccc', padding: '10px', overflowY: 'auto', borderTop: '1px solid var(--border-color)', fontFamily: 'monospace', fontSize: '12px', whiteSpace: 'pre-wrap', flexShrink: 0 }}>
           <div style={{color: '#888', marginBottom: '5px', textTransform: 'uppercase', fontSize: '10px'}}>Terminal Logs</div>
           {terminalLogs || 'Terminal ready...'}
-          <div ref={terminalEndRef} />
         </div>
       </div>
       <div className="resizer-horizontal" onMouseDown={startResizingChat} />
@@ -682,7 +801,23 @@ function App() {
               style={{ position: 'absolute', bottom: '8px', right: '16px', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: '16px', padding: '6px 14px', cursor: 'pointer', fontSize: '12px', fontWeight: 600, boxShadow: '0 2px 8px rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', gap: '4px', zIndex: 10 }}
             >↓ 新消息</button>
           )}
-          <ChatInputBox onSend={handleSend} isRunning={isRunning} handleStop={handleStop} messages={messages} plannerModel={plannerModel} setPlannerModel={setPlannerModel} workerModel={workerModel} setWorkerModel={setWorkerModel} availableModels={availableModels} />
+          <ChatInputBox
+            onSend={handleSend}
+            isRunning={isRunning}
+            handleStop={handleStop}
+            messages={messages}
+            providerConfigs={providerConfigs}
+            plannerProviderConfigId={plannerProviderConfig.id}
+            setPlannerProviderConfigId={setPlannerProviderConfigId}
+            plannerModel={plannerModel}
+            setPlannerModel={setPlannerModel}
+            workerProviderConfigId={workerProviderConfig.id}
+            setWorkerProviderConfigId={setWorkerProviderConfigId}
+            workerModel={workerModel}
+            setWorkerModel={setWorkerModel}
+            modelsByConfigId={modelsByConfigId}
+            loadingModelsByConfigId={loadingModelsByConfigId}
+          />
         </div>
       </div>
     ) : (
@@ -704,22 +839,26 @@ function App() {
       <SettingsModal
         isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)}
         activeTab={activeSettingsTab} setActiveTab={setActiveSettingsTab}
-        provider={provider} setProvider={setProvider}
-        openaiKey={openaiKey} setOpenaiKey={setOpenaiKey}
-        sensenovaKey={sensenovaKey} setSensenovaKey={setSensenovaKey}
-        anthropicKey={anthropicKey} setAnthropicKey={setAnthropicKey}
-        googleKey={googleKey} setGoogleKey={setGoogleKey}
-        openaiUrl={openaiUrl} setOpenaiUrl={setOpenaiUrl}
-        sensenovaUrl={sensenovaUrl} setSensenovaUrl={setSensenovaUrl}
-        anthropicUrl={anthropicUrl} setAnthropicUrl={setAnthropicUrl}
-        googleUrl={googleUrl} setGoogleUrl={setGoogleUrl}
+        providerConfigs={providerConfigs}
+        modelsByConfigId={modelsByConfigId}
+        activeProviderConfigId={activeProviderConfigId}
+        activeProviderConfig={activeProviderConfig}
+        setActiveProviderConfigId={setActiveProviderConfigId}
+        updateProviderConfig={updateProviderConfig}
+        addProviderConfig={addProviderConfig}
+        deleteProviderConfig={deleteProviderConfig}
+        plannerProviderConfigId={plannerProviderConfig.id}
+        setPlannerProviderConfigId={setPlannerProviderConfigId}
         plannerModel={plannerModel} setPlannerModel={setPlannerModel}
+        plannerAvailableModels={plannerAvailableModels}
+        isLoadingPlannerModels={isLoadingPlannerModels}
+        workerProviderConfigId={workerProviderConfig.id}
+        setWorkerProviderConfigId={setWorkerProviderConfigId}
         workerModel={workerModel} setWorkerModel={setWorkerModel}
+        workerAvailableModels={workerAvailableModels}
+        isLoadingWorkerModels={isLoadingWorkerModels}
         maxSteps={maxSteps} setMaxSteps={setMaxSteps}
         showHiddenFiles={showHiddenFiles} setShowHiddenFiles={setShowHiddenFiles}
-        googleAuthMethod={googleAuthMethod} setGoogleAuthMethod={setGoogleAuthMethod}
-        googleOauthToken={googleOauthToken}
-        isLoadingModels={isLoadingModels} availableModels={availableModels}
         handleOAuthLogin={handleOAuthLogin} handleLogout={handleLogout}
       />
       <HistoryModal

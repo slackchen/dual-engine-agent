@@ -8,6 +8,7 @@ import { registerModelsHandlers } from './ipc/models';
 import { registerWorkspaceHandlers } from './ipc/workspace';
 import { registerBrowserHandlers } from './ipc/browser';
 import { registerTaskHandlers } from './ipc/task';
+import { startBuiltInResponsesProxy } from './converters/responsesProxy';
 
 // Removed unused require
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,6 +38,8 @@ app.on('activate', () => {
 });
 
 app.whenReady().then(() => {
+  startBuiltInResponsesProxy();
+
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const responseHeaders = Object.assign({}, details.responseHeaders);
     // Strip headers that prevent iframe embedding

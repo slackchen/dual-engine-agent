@@ -9,6 +9,13 @@ export function registerTaskHandlers() {
   const worker = new WorkerEngine();
   const abortControllers: Record<string, AbortController> = {};
 
+  const getEngineConfig = (specificConfig: any, fallback: any) => ({
+    protocol: specificConfig?.protocol ?? fallback.protocol,
+    authMethod: specificConfig?.authMethod ?? fallback.authMethod,
+    tokenOrKey: specificConfig?.tokenOrKey ?? fallback.tokenOrKey,
+    baseUrl: specificConfig?.baseUrl ?? fallback.baseUrl,
+  });
+
   ipcMain.handle('agent:stop-task', (_event, { runId }) => {
     if (abortControllers[runId]) {
       abortControllers[runId].abort();
@@ -17,8 +24,12 @@ export function registerTaskHandlers() {
   });
 
   ipcMain.handle('agent:run-task', async (event, arg) => {
-    const { protocol, authMethod, tokenOrKey, plannerModel, workerModel, task, workspacePath, baseUrl, chatHistory, maxSteps, runId } = arg;
+    const { protocol, authMethod, tokenOrKey, plannerModel, workerModel, task, workspacePath, baseUrl, chatHistory, maxSteps, runId, plannerConfig, workerConfig } = arg;
     if (!task) return 'Error: Task is required';
+
+    const fallbackConfig = { protocol, authMethod, tokenOrKey, baseUrl };
+    const plannerRuntime = getEngineConfig(plannerConfig, fallbackConfig);
+    const workerRuntime = getEngineConfig(workerConfig, fallbackConfig);
 
     const abortController = new AbortController();
     abortControllers[runId] = abortController;
@@ -29,12 +40,12 @@ export function registerTaskHandlers() {
       event.sender.send('agent:update', { type: 'api-call', runId });
       
       const plan = await planner.plan(
-        protocol,
-        authMethod,
-        tokenOrKey, 
+        plannerRuntime.protocol,
+        plannerRuntime.authMethod,
+        plannerRuntime.tokenOrKey, 
         plannerModel, 
         task, 
-        baseUrl,
+        plannerRuntime.baseUrl,
         chatHistory || [],
         signal
       );
@@ -51,9 +62,9 @@ export function registerTaskHandlers() {
         const taskPrompt = `Task: ${sub.description}\n\nContext from previous subtasks:\n${runningContext || 'None'}`;
         
         const result = await worker.executeTask(
-          protocol,
-          authMethod,
-          tokenOrKey, 
+          workerRuntime.protocol,
+          workerRuntime.authMethod,
+          workerRuntime.tokenOrKey, 
           workerModel, 
           taskPrompt, 
           workspacePath, 
@@ -74,7 +85,7 @@ export function registerTaskHandlers() {
              const newTree = buildFileTree(workspacePath);
              event.sender.send('agent:update', { type: 'fs-state', data: newTree, runId });
           },
-          baseUrl,
+          workerRuntime.baseUrl,
           chatHistory || [],
           maxSteps || 20,
           signal

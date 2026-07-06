@@ -1,58 +1,236 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { NO_CONVERTER_PLUGIN_ID, type ConverterPluginId, isConverterPluginId } from '../converterPlugins';
 
 export type Provider = 'openai' | 'sensenova' | 'anthropic' | 'google';
 export type GoogleAuthMethod = 'oauth' | 'key';
 
-export interface AppConfig {
+export interface ProviderConfig {
+  id: string;
+  name: string;
   provider: Provider;
-  setProvider: (p: Provider) => void;
+  apiKey: string;
+  baseUrl: string;
+  converterPluginId?: ConverterPluginId;
+  modelConverterOverrides?: Record<string, ConverterPluginId>;
+  googleAuthMethod?: GoogleAuthMethod;
+  googleOauthToken?: string;
+}
 
-  openaiKey: string; setOpenaiKey: (v: string) => void;
-  openaiUrl: string; setOpenaiUrl: (v: string) => void;
+export interface AppConfig {
+  providerConfigs: ProviderConfig[];
+  activeProviderConfigId: string;
+  activeProviderConfig: ProviderConfig;
+  setActiveProviderConfigId: (id: string) => void;
+  plannerProviderConfigId: string;
+  setPlannerProviderConfigId: (id: string) => void;
+  workerProviderConfigId: string;
+  setWorkerProviderConfigId: (id: string) => void;
+  updateProviderConfig: (id: string, patch: Partial<ProviderConfig>) => void;
+  addProviderConfig: (provider?: Provider) => void;
+  deleteProviderConfig: (id: string) => void;
 
-  sensenovaKey: string; setSensenovaKey: (v: string) => void;
-  sensenovaUrl: string; setSensenovaUrl: (v: string) => void;
+  availableModels: string[];
+  setAvailableModels: (v: string[]) => void;
+  plannerModel: string;
+  setPlannerModel: (v: string) => void;
+  workerModel: string;
+  setWorkerModel: (v: string) => void;
+  maxSteps: number;
+  setMaxSteps: (v: number) => void;
+  isLoadingModels: boolean;
+  setIsLoadingModels: (v: boolean) => void;
 
-  anthropicKey: string; setAnthropicKey: (v: string) => void;
-  anthropicUrl: string; setAnthropicUrl: (v: string) => void;
+  showHiddenFiles: boolean;
+  setShowHiddenFiles: (v: boolean) => void;
 
-  googleAuthMethod: GoogleAuthMethod; setGoogleAuthMethod: (v: GoogleAuthMethod) => void;
-  googleKey: string; setGoogleKey: (v: string) => void;
-  googleUrl: string; setGoogleUrl: (v: string) => void;
-  googleOauthToken: string; setGoogleOauthToken: (v: string) => void;
-
-  availableModels: string[]; setAvailableModels: (v: string[]) => void;
-  plannerModel: string; setPlannerModel: (v: string) => void;
-  workerModel: string; setWorkerModel: (v: string) => void;
-  maxSteps: number; setMaxSteps: (v: number) => void;
-  isLoadingModels: boolean; setIsLoadingModels: (v: boolean) => void;
-
-  showHiddenFiles: boolean; setShowHiddenFiles: (v: boolean) => void;
-
-  /** The last workspace path restored from persisted config — for startup auto-open */
+  /** The last workspace path restored from persisted config, used for startup auto-open. */
   lastWorkspacePath: string;
   isGlobalLoaded: boolean;
 
-  /** Call this with the live workspacePath so it gets persisted to global-config.json */
+  /** Call this with the live workspacePath so it gets persisted to global-config.json. */
   saveWorkspacePath: (path: string) => void;
 }
 
+export const PROVIDER_LABELS: Record<Provider, string> = {
+  openai: 'OpenAI',
+  sensenova: 'SenseNova',
+  anthropic: 'Anthropic',
+  google: 'Google Gemini',
+};
+
+export const DEFAULT_BASE_URLS: Record<Provider, string> = {
+  openai: 'https://api.openai.com/v1',
+  sensenova: 'https://token.sensenova.cn/v1',
+  anthropic: 'https://api.anthropic.com/v1',
+  google: 'https://generativelanguage.googleapis.com/v1beta',
+};
+
+const PROVIDERS: Provider[] = ['openai', 'sensenova', 'anthropic', 'google'];
+
+const isProvider = (value: unknown): value is Provider =>
+  typeof value === 'string' && PROVIDERS.includes(value as Provider);
+
+const isGoogleAuthMethod = (value: unknown): value is GoogleAuthMethod =>
+  value === 'oauth' || value === 'key';
+
+const normalizeModelConverterOverrides = (value: unknown): Record<string, ConverterPluginId> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([model, pluginId]) => model.trim() && isConverterPluginId(pluginId))
+  ) as Record<string, ConverterPluginId>;
+};
+
+const createConfigId = (provider: Provider) =>
+  `${provider}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const createProviderConfig = (
+  provider: Provider,
+  values: Partial<ProviderConfig> = {},
+): ProviderConfig => {
+  const config: ProviderConfig = {
+    id: values.id || `${provider}-default`,
+    name: values.name || PROVIDER_LABELS[provider],
+    provider,
+    apiKey: values.apiKey || '',
+    baseUrl: values.baseUrl || DEFAULT_BASE_URLS[provider],
+    converterPluginId: isConverterPluginId(values.converterPluginId) ? values.converterPluginId : NO_CONVERTER_PLUGIN_ID,
+    modelConverterOverrides: normalizeModelConverterOverrides(values.modelConverterOverrides),
+  };
+
+  if (provider === 'google') {
+    config.googleAuthMethod = isGoogleAuthMethod(values.googleAuthMethod) ? values.googleAuthMethod : 'oauth';
+    config.googleOauthToken = values.googleOauthToken || '';
+  }
+
+  return config;
+};
+
+const createDefaultProviderConfigs = () => PROVIDERS.map(provider => createProviderConfig(provider));
+
+const normalizeProviderConfig = (raw: any, index: number): ProviderConfig => {
+  const provider: Provider = isProvider(raw?.provider) ? raw.provider : 'openai';
+  const id = typeof raw?.id === 'string' && raw.id.trim()
+    ? raw.id
+    : index < PROVIDERS.length
+      ? `${PROVIDERS[index]}-default`
+      : createConfigId(provider);
+
+  return createProviderConfig(provider, {
+    id,
+    name: typeof raw?.name === 'string' && raw.name.trim() ? raw.name : PROVIDER_LABELS[provider],
+    apiKey: typeof raw?.apiKey === 'string' ? raw.apiKey : '',
+    baseUrl: typeof raw?.baseUrl === 'string' && raw.baseUrl.trim() ? raw.baseUrl : DEFAULT_BASE_URLS[provider],
+    converterPluginId: isConverterPluginId(raw?.converterPluginId) ? raw.converterPluginId : NO_CONVERTER_PLUGIN_ID,
+    modelConverterOverrides: normalizeModelConverterOverrides(raw?.modelConverterOverrides),
+    googleAuthMethod: isGoogleAuthMethod(raw?.googleAuthMethod) ? raw.googleAuthMethod : 'oauth',
+    googleOauthToken: typeof raw?.googleOauthToken === 'string' ? raw.googleOauthToken : '',
+  });
+};
+
+const migrateLegacyProviderConfigs = (config: any): ProviderConfig[] => [
+  createProviderConfig('openai', {
+    id: 'openai-default',
+    name: 'OpenAI',
+    apiKey: typeof config?.openaiKey === 'string' ? config.openaiKey : '',
+    baseUrl: typeof config?.openaiUrl === 'string' && config.openaiUrl.trim() ? config.openaiUrl : DEFAULT_BASE_URLS.openai,
+    converterPluginId: NO_CONVERTER_PLUGIN_ID,
+    modelConverterOverrides: {},
+  }),
+  createProviderConfig('sensenova', {
+    id: 'sensenova-default',
+    name: 'SenseNova',
+    apiKey: typeof config?.sensenovaKey === 'string' ? config.sensenovaKey : '',
+    baseUrl: typeof config?.sensenovaUrl === 'string' && config.sensenovaUrl.trim() ? config.sensenovaUrl : DEFAULT_BASE_URLS.sensenova,
+    converterPluginId: NO_CONVERTER_PLUGIN_ID,
+    modelConverterOverrides: {},
+  }),
+  createProviderConfig('anthropic', {
+    id: 'anthropic-default',
+    name: 'Anthropic',
+    apiKey: typeof config?.anthropicKey === 'string' ? config.anthropicKey : '',
+    baseUrl: typeof config?.anthropicUrl === 'string' && config.anthropicUrl.trim() ? config.anthropicUrl : DEFAULT_BASE_URLS.anthropic,
+    converterPluginId: NO_CONVERTER_PLUGIN_ID,
+    modelConverterOverrides: {},
+  }),
+  createProviderConfig('google', {
+    id: 'google-default',
+    name: 'Google Gemini',
+    apiKey: typeof config?.googleKey === 'string' ? config.googleKey : '',
+    baseUrl: typeof config?.googleUrl === 'string' && config.googleUrl.trim() ? config.googleUrl : DEFAULT_BASE_URLS.google,
+    converterPluginId: NO_CONVERTER_PLUGIN_ID,
+    modelConverterOverrides: {},
+    googleAuthMethod: isGoogleAuthMethod(config?.googleAuthMethod) ? config.googleAuthMethod : 'oauth',
+    googleOauthToken: typeof config?.googleOauthToken === 'string' ? config.googleOauthToken : '',
+  }),
+];
+
+const ensureUniqueConfigIds = (configs: ProviderConfig[]) => {
+  const seen = new Set<string>();
+  return configs.map(config => {
+    if (!seen.has(config.id)) {
+      seen.add(config.id);
+      return config;
+    }
+
+    const next = { ...config, id: createConfigId(config.provider) };
+    seen.add(next.id);
+    return next;
+  });
+};
+
+const loadProviderConfigs = (config: any): ProviderConfig[] => {
+  if (Array.isArray(config?.providerConfigs) && config.providerConfigs.length > 0) {
+    return ensureUniqueConfigIds(config.providerConfigs.map(normalizeProviderConfig));
+  }
+
+  return migrateLegacyProviderConfigs(config);
+};
+
+const getInitialActiveConfigId = (config: any, providerConfigs: ProviderConfig[]) => {
+  if (typeof config?.activeProviderConfigId === 'string') {
+    const existing = providerConfigs.find(item => item.id === config.activeProviderConfigId);
+    if (existing) return existing.id;
+  }
+
+  if (isProvider(config?.provider)) {
+    const legacyMatch = providerConfigs.find(item => item.id === `${config.provider}-default`)
+      || providerConfigs.find(item => item.provider === config.provider);
+    if (legacyMatch) return legacyMatch.id;
+  }
+
+  return providerConfigs[0].id;
+};
+
+const getInitialRoleConfigId = (
+  config: any,
+  key: 'plannerProviderConfigId' | 'workerProviderConfigId',
+  providerConfigs: ProviderConfig[],
+  fallbackConfigId: string,
+) => {
+  if (typeof config?.[key] === 'string') {
+    const existing = providerConfigs.find(item => item.id === config[key]);
+    if (existing) return existing.id;
+  }
+
+  return fallbackConfigId;
+};
+
+const getLegacyProviderConfig = (
+  providerConfigs: ProviderConfig[],
+  activeProviderConfig: ProviderConfig,
+  provider: Provider,
+) => {
+  if (activeProviderConfig.provider === provider) return activeProviderConfig;
+  return providerConfigs.find(config => config.provider === provider) || createProviderConfig(provider);
+};
+
 export function useAppConfig(): AppConfig {
-  const [provider, setProvider] = useState<Provider>('openai');
-
-  const [openaiKey, setOpenaiKey] = useState('');
-  const [openaiUrl, setOpenaiUrl] = useState('https://api.openai.com/v1');
-
-  const [sensenovaKey, setSensenovaKey] = useState('');
-  const [sensenovaUrl, setSensenovaUrl] = useState('https://token.sensenova.cn/v1');
-
-  const [anthropicKey, setAnthropicKey] = useState('');
-  const [anthropicUrl, setAnthropicUrl] = useState('https://api.anthropic.com/v1');
-
-  const [googleAuthMethod, setGoogleAuthMethod] = useState<GoogleAuthMethod>('oauth');
-  const [googleKey, setGoogleKey] = useState('');
-  const [googleUrl, setGoogleUrl] = useState('https://generativelanguage.googleapis.com/v1beta');
-  const [googleOauthToken, setGoogleOauthToken] = useState('');
+  const [providerConfigs, setProviderConfigs] = useState<ProviderConfig[]>(createDefaultProviderConfigs);
+  const [activeProviderConfigId, setActiveProviderConfigId] = useState('openai-default');
+  const [plannerProviderConfigId, setPlannerProviderConfigId] = useState('openai-default');
+  const [workerProviderConfigId, setWorkerProviderConfigId] = useState('openai-default');
 
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [plannerModel, setPlannerModel] = useState('');
@@ -63,76 +241,155 @@ export function useAppConfig(): AppConfig {
   const [showHiddenFiles, setShowHiddenFiles] = useState(false);
   const [isGlobalLoaded, setIsGlobalLoaded] = useState(false);
 
-  /** Snapshot of last workspace path from config — used only for startup restoration */
+  /** Snapshot of last workspace path from config, used only for startup restoration. */
   const [lastWorkspacePath, setLastWorkspacePath] = useState('');
-  /** Live workspace path tracked here for persistence */
+  /** Live workspace path tracked here for persistence. */
   const [liveWorkspacePath, setLiveWorkspacePath] = useState('');
 
-  // Load global config on mount
-  useEffect(() => {
-    // @ts-ignore
-    if (typeof window.ipcRenderer !== 'undefined') {
-      // @ts-ignore
-      window.ipcRenderer.invoke('agent:load-global-config').then((config: any) => {
-        if (config) {
-          if (config.provider) setProvider(config.provider);
-          if (config.openaiKey) setOpenaiKey(config.openaiKey);
-          if (config.sensenovaKey) setSensenovaKey(config.sensenovaKey);
-          if (config.anthropicKey) setAnthropicKey(config.anthropicKey);
-          if (config.googleKey) setGoogleKey(config.googleKey);
-          if (config.plannerModel) setPlannerModel(config.plannerModel);
-          if (config.workerModel) setWorkerModel(config.workerModel);
-          if (config.maxSteps !== undefined) setMaxSteps(config.maxSteps);
-          else setMaxSteps(20);
-          if (config.openaiUrl) setOpenaiUrl(config.openaiUrl);
-          if (config.sensenovaUrl) setSensenovaUrl(config.sensenovaUrl);
-          if (config.anthropicUrl) setAnthropicUrl(config.anthropicUrl);
-          if (config.googleUrl) setGoogleUrl(config.googleUrl);
-          if (config.googleAuthMethod) setGoogleAuthMethod(config.googleAuthMethod);
-          if (config.googleOauthToken) setGoogleOauthToken(config.googleOauthToken);
-          if (config.lastWorkspacePath) {
-            setLastWorkspacePath(config.lastWorkspacePath);
-            setLiveWorkspacePath(config.lastWorkspacePath);
-          }
-          if (config.showHiddenFiles !== undefined) setShowHiddenFiles(config.showHiddenFiles);
-        }
-        setIsGlobalLoaded(true);
+  const activeProviderConfig = useMemo(() => {
+    return providerConfigs.find(config => config.id === activeProviderConfigId) || providerConfigs[0];
+  }, [activeProviderConfigId, providerConfigs]);
+
+  const updateProviderConfig = useCallback((id: string, patch: Partial<ProviderConfig>) => {
+    setProviderConfigs(prev => prev.map(config => {
+      if (config.id !== id) return config;
+
+      const provider = isProvider(patch.provider) ? patch.provider : config.provider;
+      return createProviderConfig(provider, {
+        ...config,
+        ...patch,
+        provider,
+        baseUrl: typeof patch.baseUrl === 'string' ? patch.baseUrl : config.baseUrl || DEFAULT_BASE_URLS[provider],
       });
-    }
+    }));
   }, []);
 
-  // Save global config whenever settings change
+  const addProviderConfig = useCallback((provider: Provider = 'openai') => {
+    const next = createProviderConfig(provider, {
+      id: createConfigId(provider),
+      name: `${PROVIDER_LABELS[provider]} Config`,
+    });
+    setProviderConfigs(prev => [...prev, next]);
+    setActiveProviderConfigId(next.id);
+  }, []);
+
+  const deleteProviderConfig = useCallback((id: string) => {
+    setProviderConfigs(prev => {
+      if (prev.length <= 1) return prev;
+      const next = prev.filter(config => config.id !== id);
+      if (next.length === prev.length) return prev;
+
+      setActiveProviderConfigId(current => current === id ? next[0].id : current);
+      setPlannerProviderConfigId(current => current === id ? next[0].id : current);
+      setWorkerProviderConfigId(current => current === id ? next[0].id : current);
+      return next;
+    });
+  }, []);
+
+  // Load global config on mount.
   useEffect(() => {
-    if (!isGlobalLoaded) return;
     // @ts-ignore
-    if (typeof window.ipcRenderer !== 'undefined') {
-      // @ts-ignore
-      window.ipcRenderer.invoke('agent:save-global-config', {
-        provider, openaiKey, sensenovaKey, anthropicKey, googleKey,
-        plannerModel, workerModel, maxSteps,
-        openaiUrl, sensenovaUrl, anthropicUrl, googleUrl,
-        googleAuthMethod, googleOauthToken,
-        showHiddenFiles, lastWorkspacePath: liveWorkspacePath
-      });
+    if (typeof window.ipcRenderer === 'undefined') {
+      setIsGlobalLoaded(true);
+      return;
     }
-  }, [provider, openaiKey, sensenovaKey, anthropicKey, googleKey, plannerModel, workerModel, maxSteps,
-      openaiUrl, sensenovaUrl, anthropicUrl, googleUrl, googleAuthMethod, googleOauthToken,
-      showHiddenFiles, liveWorkspacePath, isGlobalLoaded]);
+
+    // @ts-ignore
+    window.ipcRenderer.invoke('agent:load-global-config').then((config: any) => {
+      if (config) {
+        const nextProviderConfigs = loadProviderConfigs(config);
+        const nextActiveConfigId = getInitialActiveConfigId(config, nextProviderConfigs);
+        setProviderConfigs(nextProviderConfigs);
+        setActiveProviderConfigId(nextActiveConfigId);
+        setPlannerProviderConfigId(getInitialRoleConfigId(config, 'plannerProviderConfigId', nextProviderConfigs, nextActiveConfigId));
+        setWorkerProviderConfigId(getInitialRoleConfigId(config, 'workerProviderConfigId', nextProviderConfigs, nextActiveConfigId));
+
+        if (typeof config.plannerModel === 'string') setPlannerModel(config.plannerModel);
+        if (typeof config.workerModel === 'string') setWorkerModel(config.workerModel);
+        if (typeof config.maxSteps === 'number') setMaxSteps(config.maxSteps);
+        else setMaxSteps(20);
+        if (typeof config.lastWorkspacePath === 'string') {
+          setLastWorkspacePath(config.lastWorkspacePath);
+          setLiveWorkspacePath(config.lastWorkspacePath);
+        }
+        if (typeof config.showHiddenFiles === 'boolean') setShowHiddenFiles(config.showHiddenFiles);
+      }
+      setIsGlobalLoaded(true);
+    });
+  }, []);
+
+  // Save global config whenever settings change.
+  useEffect(() => {
+    if (!isGlobalLoaded || !activeProviderConfig) return;
+    // @ts-ignore
+    if (typeof window.ipcRenderer === 'undefined') return;
+
+    const openaiConfig = getLegacyProviderConfig(providerConfigs, activeProviderConfig, 'openai');
+    const sensenovaConfig = getLegacyProviderConfig(providerConfigs, activeProviderConfig, 'sensenova');
+    const anthropicConfig = getLegacyProviderConfig(providerConfigs, activeProviderConfig, 'anthropic');
+    const googleConfig = getLegacyProviderConfig(providerConfigs, activeProviderConfig, 'google');
+
+    // @ts-ignore
+    window.ipcRenderer.invoke('agent:save-global-config', {
+      activeProviderConfigId,
+      plannerProviderConfigId,
+      workerProviderConfigId,
+      providerConfigs,
+      provider: activeProviderConfig.provider,
+      openaiKey: openaiConfig.apiKey,
+      sensenovaKey: sensenovaConfig.apiKey,
+      anthropicKey: anthropicConfig.apiKey,
+      googleKey: googleConfig.apiKey,
+      plannerModel,
+      workerModel,
+      maxSteps,
+      openaiUrl: openaiConfig.baseUrl,
+      sensenovaUrl: sensenovaConfig.baseUrl,
+      anthropicUrl: anthropicConfig.baseUrl,
+      googleUrl: googleConfig.baseUrl,
+      googleAuthMethod: googleConfig.googleAuthMethod || 'oauth',
+      googleOauthToken: googleConfig.googleOauthToken || '',
+      showHiddenFiles,
+      lastWorkspacePath: liveWorkspacePath,
+    });
+  }, [
+    activeProviderConfig,
+    activeProviderConfigId,
+    plannerProviderConfigId,
+    workerProviderConfigId,
+    providerConfigs,
+    plannerModel,
+    workerModel,
+    maxSteps,
+    showHiddenFiles,
+    liveWorkspacePath,
+    isGlobalLoaded,
+  ]);
 
   return {
-    provider, setProvider,
-    openaiKey, setOpenaiKey, openaiUrl, setOpenaiUrl,
-    sensenovaKey, setSensenovaKey, sensenovaUrl, setSensenovaUrl,
-    anthropicKey, setAnthropicKey, anthropicUrl, setAnthropicUrl,
-    googleAuthMethod, setGoogleAuthMethod,
-    googleKey, setGoogleKey, googleUrl, setGoogleUrl,
-    googleOauthToken, setGoogleOauthToken,
-    availableModels, setAvailableModels,
-    plannerModel, setPlannerModel,
-    workerModel, setWorkerModel,
-    maxSteps, setMaxSteps,
-    isLoadingModels, setIsLoadingModels,
-    showHiddenFiles, setShowHiddenFiles,
+    providerConfigs,
+    activeProviderConfigId,
+    activeProviderConfig,
+    setActiveProviderConfigId,
+    plannerProviderConfigId,
+    setPlannerProviderConfigId,
+    workerProviderConfigId,
+    setWorkerProviderConfigId,
+    updateProviderConfig,
+    addProviderConfig,
+    deleteProviderConfig,
+    availableModels,
+    setAvailableModels,
+    plannerModel,
+    setPlannerModel,
+    workerModel,
+    setWorkerModel,
+    maxSteps,
+    setMaxSteps,
+    isLoadingModels,
+    setIsLoadingModels,
+    showHiddenFiles,
+    setShowHiddenFiles,
     lastWorkspacePath,
     isGlobalLoaded,
     saveWorkspacePath: setLiveWorkspacePath,

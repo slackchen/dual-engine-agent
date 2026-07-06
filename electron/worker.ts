@@ -145,6 +145,8 @@ FILE TOOL ARGUMENTS:
 - Always prefer a path relative to the workspace, such as \`src/App.tsx\` or \`js/main.js\`.
 - Before calling \`editFileContent\`, read the file first and copy an exact, unique block into \`targetContent\`. Do not use ellipses or summaries in \`targetContent\`.
 - Do not invent argument names such as \`filename\`, \`filepath\`, \`file\`, or \`target\`. The canonical key is \`filePath\`.
+- If \`editFileContent\` fails with "Target content not found", your previous file view is stale. Immediately call \`readFile\` for that same file, then retry once with a fresh exact block from the latest file content. Do not retry the same \`targetContent\`.
+- If a file was just edited or written earlier in this task, read it again before making another targeted edit to that file.
 
 BROWSER TOOL ARGUMENTS:
 - \`openBrowser\`: use exactly \`{ "urlOrFilePath": "index.html" }\` for a local file, or \`{ "urlOrFilePath": "http://localhost:5173/" }\` for a web URL.

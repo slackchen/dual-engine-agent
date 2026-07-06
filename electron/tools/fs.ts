@@ -25,6 +25,61 @@ function calculateLineDiff(oldBlock: string, newBlock: string) {
   };
 }
 
+function compactLine(line: string, maxLength = 140) {
+  const compact = line.trim().replace(/\s+/g, ' ');
+  return compact.length > maxLength ? `${compact.slice(0, maxLength - 3)}...` : compact;
+}
+
+function buildClosestMatchDiagnostic(oldLines: string[], targetLines: string[]) {
+  const oldNonEmpty = oldLines.map((text, index) => ({ text: text.trim(), raw: text, index })).filter(item => item.text !== '');
+  const targetNonEmpty = targetLines.map(text => text.trim()).filter(text => text !== '');
+  if (oldNonEmpty.length === 0 || targetNonEmpty.length === 0) return null;
+
+  const windowSize = Math.min(targetNonEmpty.length, oldNonEmpty.length);
+  let bestStart = 0;
+  let bestScore = -1;
+
+  for (let i = 0; i <= oldNonEmpty.length - windowSize; i++) {
+    let score = 0;
+    for (let j = 0; j < windowSize; j++) {
+      if (oldNonEmpty[i + j].text === targetNonEmpty[j]) {
+        score += 2;
+      } else if (oldNonEmpty[i + j].text.includes(targetNonEmpty[j]) || targetNonEmpty[j].includes(oldNonEmpty[i + j].text)) {
+        score += 1;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestStart = i;
+    }
+  }
+
+  if (bestScore <= 0) return null;
+
+  let mismatchIndex = 0;
+  while (
+    mismatchIndex < windowSize &&
+    oldNonEmpty[bestStart + mismatchIndex].text === targetNonEmpty[mismatchIndex]
+  ) {
+    mismatchIndex++;
+  }
+
+  const startLine = oldNonEmpty[bestStart].index + 1;
+  const endLine = oldNonEmpty[bestStart + windowSize - 1].index + 1;
+  const block = oldLines.slice(startLine - 1, endLine).join('\n');
+  const expected = targetNonEmpty[mismatchIndex] ?? '';
+  const actual = oldNonEmpty[bestStart + mismatchIndex]?.text ?? '';
+
+  return {
+    startLine,
+    endLine,
+    score: bestScore,
+    expected: compactLine(expected),
+    actual: compactLine(actual),
+    block: block.length > 2000 ? `${block.slice(0, 2000)}\n...` : block
+  };
+}
+
 export function createFSTools(
   workspacePath: string,
   onLog: (log: string) => void,
@@ -228,7 +283,17 @@ export function createFSTools(
           }
           
           if (matchCount === 0) {
-            return { success: false, error: `Target content not found in file. Even after ignoring indentation and empty lines, no match was found.` };
+            const diagnostic = buildClosestMatchDiagnostic(oldLines, targetLines);
+            const diagnosticMessage = diagnostic
+              ? ` Closest block is around lines ${diagnostic.startLine}-${diagnostic.endLine}. First mismatch: expected "${diagnostic.expected}", found "${diagnostic.actual}".`
+              : '';
+            return {
+              success: false,
+              error: `Target content not found in file. Even after ignoring indentation and empty lines, no match was found.${diagnosticMessage} Re-read the file and use a current exact block before retrying.`,
+              closestMatch: diagnostic?.block,
+              closestMatchStartLine: diagnostic?.startLine,
+              closestMatchEndLine: diagnostic?.endLine
+            };
           }
           if (matchCount > 1) {
             return { success: false, error: `Target content is not unique. Multiple fuzzy matches found.` };
