@@ -1,6 +1,64 @@
 import { tool } from 'ai';
 import { z } from 'zod';
-import { exec } from 'node:child_process';
+import { spawn } from 'node:child_process';
+
+class CommandOutputDecoder {
+  private utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+  private fallbackDecoder = new TextDecoder('gb18030');
+  private useFallback = false;
+
+  decode(data: Buffer | string) {
+    if (typeof data === 'string') return data;
+    if (this.useFallback) return this.fallbackDecoder.decode(data, { stream: true });
+
+    try {
+      return this.utf8Decoder.decode(data, { stream: true });
+    } catch {
+      this.useFallback = true;
+      this.utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+      return this.fallbackDecoder.decode(data, { stream: true });
+    }
+  }
+
+  flush() {
+    return this.useFallback
+      ? this.fallbackDecoder.decode()
+      : this.utf8Decoder.decode();
+  }
+}
+
+function prefixStderr(text: string) {
+  if (!text) return '';
+  return text
+    .split(/(\r?\n)/)
+    .map(part => (part.trim() && !/^\r?\n$/.test(part) ? `[STDERR] ${part}` : part))
+    .join('');
+}
+
+function createShellProcess(command: string, workspacePath: string, env: NodeJS.ProcessEnv) {
+  if (process.platform === 'win32') {
+    return spawn('powershell.exe', [
+      '-NoLogo',
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      command,
+    ], {
+      cwd: workspacePath,
+      env,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
+
+  return spawn(command, {
+    cwd: workspacePath,
+    env,
+    shell: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
 
 export function createShellTools(
   workspacePath: string,
@@ -20,44 +78,64 @@ export function createShellTools(
         }
         onLog(`\n> ${command}\n`);
         return new Promise((resolve) => {
-          const shellCommand = process.platform === 'win32'
-            ? `chcp 65001 > nul && ${command}`
-            : command;
-          const child = exec(shellCommand, {
-            cwd: workspacePath,
-            env: {
-              ...process.env,
-              LANG: 'en_US.UTF-8',
-              LC_ALL: 'en_US.UTF-8',
-              PYTHONIOENCODING: 'utf-8'
-            },
-            encoding: 'utf8',
-            windowsHide: true
+          const child = createShellProcess(command, workspacePath, {
+            ...process.env,
+            LANG: 'en_US.UTF-8',
+            LC_ALL: 'en_US.UTF-8',
+            PYTHONIOENCODING: 'utf-8',
+            POWERSHELL_TELEMETRY_OPTOUT: '1',
           });
           let output = '';
+          const stdoutDecoder = new CommandOutputDecoder();
+          const stderrDecoder = new CommandOutputDecoder();
+          let settled = false;
+          let timeout: ReturnType<typeof setTimeout> | null = null;
+          const finish = (result: any) => {
+            if (settled) return;
+            settled = true;
+            if (timeout) clearTimeout(timeout);
+            resolve(result);
+          };
           
           child.stdout?.on('data', (data) => {
-            onLog(data.toString());
-            output += data.toString();
+            const text = stdoutDecoder.decode(data);
+            onLog(text);
+            output += text;
           });
           
           child.stderr?.on('data', (data) => {
-            onLog(`[STDERR] ${data.toString()}`);
-            output += data.toString();
+            const text = stderrDecoder.decode(data);
+            onLog(prefixStderr(text));
+            output += text;
           });
           
           child.on('close', (code) => {
-            if (code === 0) {
-              resolve({ success: true, message: output });
-            } else {
-              resolve({ success: false, error: `Command failed with exit code ${code}\n${output}` });
+            const trailingStdout = stdoutDecoder.flush();
+            const trailingStderr = stderrDecoder.flush();
+            if (trailingStdout) {
+              onLog(trailingStdout);
+              output += trailingStdout;
             }
+            if (trailingStderr) {
+              onLog(prefixStderr(trailingStderr));
+              output += trailingStderr;
+            }
+
+            if (code === 0) {
+              finish({ success: true, message: output });
+            } else {
+              finish({ success: false, error: `Command failed with exit code ${code}\n${output}` });
+            }
+          });
+
+          child.on('error', (error) => {
+            finish({ success: false, error: error.message });
           });
           
           // Timeout after 30 seconds
-          setTimeout(() => {
+          timeout = setTimeout(() => {
             child.kill();
-            resolve({ success: false, error: `Command timed out after 30 seconds.\n${output}` });
+            finish({ success: false, error: `Command timed out after 30 seconds.\n${output}` });
           }, 30000);
         });
       }

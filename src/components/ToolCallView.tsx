@@ -15,18 +15,69 @@ interface ToolCallViewProps {
 
 function getToolFilePath(act: any, res: any): string {
   const args = act?.args ?? {};
-  return args.filePath
+  return res?.filePath
+    || args.AbsolutePath
+    || res?.displayPath
+    || args.filePath
     || args.path
     || args.targetFile
-    || args.AbsolutePath
     || args.file_path
     || args.file
     || args.filename
     || args.htmlFile
     || args.htmlFilePath
-    || res?.filePath
-    || res?.displayPath
     || '';
+}
+
+function normalizeNewlines(value: string) {
+  return value.replace(/\r\n/g, '\n');
+}
+
+function splitSnippet(value: string) {
+  return value === '' ? [] : normalizeNewlines(value).split('\n');
+}
+
+function linesMatch(lines: string[], startIndex: number, expectedLines: string[]) {
+  if (startIndex < 0 || startIndex + expectedLines.length > lines.length) return false;
+  for (let i = 0; i < expectedLines.length; i++) {
+    if (lines[startIndex + i] !== expectedLines[i]) return false;
+  }
+  return true;
+}
+
+function buildFullFileDiff(currentContent: string, res: any, act: any) {
+  const oldSnippet = String(res?.actualOldContent ?? act.args?.targetContent ?? '');
+  const newSnippet = String(res?.actualNewContent ?? act.args?.replacementContent ?? act.args?.content ?? '');
+  const current = normalizeNewlines(currentContent);
+  const normalizedOldSnippet = normalizeNewlines(oldSnippet);
+  const normalizedNewSnippet = normalizeNewlines(newSnippet);
+
+  if (!res?.startLine || (!normalizedOldSnippet && !normalizedNewSnippet)) {
+    return { original: normalizedOldSnippet, modified: normalizedNewSnippet };
+  }
+
+  const currentLines = current.split('\n');
+  const newLines = splitSnippet(normalizedNewSnippet);
+  const oldLines = splitSnippet(normalizedOldSnippet);
+  const startIndex = Math.max(0, Number(res.startLine) - 1);
+
+  if (linesMatch(currentLines, startIndex, newLines)) {
+    const originalLines = [...currentLines];
+    originalLines.splice(startIndex, newLines.length, ...oldLines);
+    return { original: originalLines.join('\n'), modified: current };
+  }
+
+  if (normalizedNewSnippet) {
+    const matchIndex = current.indexOf(normalizedNewSnippet);
+    if (matchIndex !== -1 && current.indexOf(normalizedNewSnippet, matchIndex + normalizedNewSnippet.length) === -1) {
+      return {
+        original: current.slice(0, matchIndex) + normalizedOldSnippet + current.slice(matchIndex + normalizedNewSnippet.length),
+        modified: current,
+      };
+    }
+  }
+
+  return { original: normalizedOldSnippet, modified: normalizedNewSnippet };
 }
 
 export function ToolCallView({ act, res, msg, idx, mergedSteps, openTabs, setOpenTabs, setActiveTab, setDiffState }: ToolCallViewProps) {
@@ -65,16 +116,26 @@ export function ToolCallView({ act, res, msg, idx, mergedSteps, openTabs, setOpe
               {res && res.linesAdded !== undefined ? (
                 <span 
                   style={{ cursor: 'pointer', color: 'var(--accent)', textDecoration: 'underline' }}
-                  onClick={() => {
+                  onClick={async () => {
                     const tabName = getToolFilePath(act, res);
                     if (tabName && !openTabs.includes(tabName)) {
                       setOpenTabs(prev => [...prev, tabName]);
                     }
                     if (tabName) setActiveTab(tabName);
-                    // Use strict standard fields (backend execution ground truth first, fallback to strict LLM args)
-                    const orig = res?.actualOldContent ?? act.args.targetContent ?? '';
-                    const mod = res?.actualNewContent ?? act.args.replacementContent ?? act.args.content ?? '';
-                    setDiffState({ original: orig, modified: mod, startLine: res?.startLine });
+
+                    try {
+                      // @ts-ignore
+                      const currentContent = tabName && typeof window.ipcRenderer !== 'undefined'
+                        // @ts-ignore
+                        ? await window.ipcRenderer.invoke('agent:read-file', { filePath: tabName })
+                        : '';
+                      const diff = buildFullFileDiff(String(currentContent || ''), res, act);
+                      setDiffState({ original: diff.original, modified: diff.modified, startLine: res?.startLine });
+                    } catch {
+                      const orig = res?.actualOldContent ?? act.args.targetContent ?? '';
+                      const mod = res?.actualNewContent ?? act.args.replacementContent ?? act.args.content ?? '';
+                      setDiffState({ original: orig, modified: mod, startLine: res?.startLine });
+                    }
                   }}
                 >
                   ✏️ View Edit (+{res.linesAdded} / -{res.linesRemoved} lines)

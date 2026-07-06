@@ -15,17 +15,17 @@ interface AgentStepViewProps {
 
 function getToolFilePath(act: any, res: any): string {
   const args = act?.args ?? {};
-  return args.filePath
+  return res?.filePath
+    || args.AbsolutePath
+    || res?.displayPath
+    || args.filePath
     || args.path
     || args.targetFile
-    || args.AbsolutePath
     || args.file_path
     || args.file
     || args.filename
     || args.htmlFile
     || args.htmlFilePath
-    || res?.filePath
-    || res?.displayPath
     || '';
 }
 
@@ -38,7 +38,10 @@ export function AgentStepView({ step, idx, mergedSteps, msg, openTabs, setOpenTa
         </div>
       )}
       {step.actions && step.actions.map((act: any, actIdx: number) => {
-        const res = step.results ? step.results.find((r: any) => r.toolName === act.toolName) : null;
+        const indexedResult = step.results?.[actIdx];
+        const res = indexedResult?.toolName === act.toolName
+          ? indexedResult
+          : step.results?.find((r: any) => r.toolName === act.toolName);
         const isFileMod = act.toolName === 'editFileContent' || act.toolName === 'writeFile' || act.toolName === 'createFile';
         const isCmd = act.toolName === 'runCommand' || act.toolName === 'run_command' || act.toolName === 'executeCommand';
         const isBrowser = act.toolName === 'openBrowser';
@@ -56,7 +59,10 @@ export function AgentStepView({ step, idx, mergedSteps, msg, openTabs, setOpenTa
                     if (fp && !openTabs.includes(fp)) {
                       setOpenTabs(prev => [...prev, fp]);
                     }
-                    if (fp) setActiveTab(fp);
+                    if (fp) {
+                      setActiveTab(fp);
+                      setDiffState(null);
+                    }
                   };
 
                   if (isFileMod || isReadFile) {
