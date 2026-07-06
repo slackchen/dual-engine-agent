@@ -43,6 +43,15 @@ const ApiCallsBadge = ({ count }: { count: number }) => (
   </span>
 );
 
+const MODEL_WAIT_STATUS = 'Tool finished. Waiting for model to analyze results';
+
+const formatElapsed = (startedAt: number, now: number) => {
+  const totalSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+};
+
 const filterModelsForProvider = (providerConfig: ProviderConfig, models: string[]) => {
   if (providerConfig.provider === 'openai') return models;
   if (providerConfig.provider === 'anthropic') return models.filter(m => m.includes('claude-'));
@@ -165,6 +174,19 @@ function App() {
   } = conv;
 
   // ─── File Editor ──────────────────────────────────────────────────
+  const [statusNow, setStatusNow] = useState(Date.now());
+  const hasActiveModelWait = useMemo(
+    () => messages.some(m => !m.isComplete && !!m.modelWaitStartedAt),
+    [messages]
+  );
+
+  useEffect(() => {
+    if (!hasActiveModelWait) return;
+    setStatusNow(Date.now());
+    const timer = window.setInterval(() => setStatusNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [hasActiveModelWait]);
+
   const editor = useFileEditor(setOpenTabs, setActiveTab);
   const {
     activeFileContent, setActiveFileContent,
@@ -333,18 +355,25 @@ function App() {
         if (targetMsg.role !== 'ai') return prev;
         if (data.type === 'status') {
           targetMsg.statusLogs = [...targetMsg.statusLogs, data.data];
+          targetMsg.modelWaitStartedAt = null;
+        } else if (data.type === 'model-wait-start') {
+          targetMsg.statusLogs = [...targetMsg.statusLogs, MODEL_WAIT_STATUS];
+          targetMsg.modelWaitStartedAt = Date.now();
         } else if (data.type === 'plan') {
+          targetMsg.modelWaitStartedAt = null;
           targetMsg.plan = data.data;
           const summaryText = data.data && typeof data.data.summary === 'string' ? data.data.summary : (typeof data.data === 'string' ? data.data : JSON.stringify(data.data));
           const planText = summaryText.split('\n').map((l: string) => `> ${l}`).join('\n');
           targetMsg.content += `### 📋 Orchestrator Plan\n${planText}\n\n`;
         } else if (data.type === 'subtask-result') {
+          targetMsg.modelWaitStartedAt = null;
           const resultStr = typeof data.data === 'string' ? data.data : JSON.stringify(data.data || '');
           const resultText = resultStr.split('\n').map((l: string) => `> ${l}`).join('\n');
           targetMsg.content += `### 🤖 Task Result\n${resultText}\n\n`;
         } else if (data.type === 'api-call') {
           targetMsg.apiCallCount = (targetMsg.apiCallCount || 0) + 1;
         } else if (data.type === 'agent-step') {
+          targetMsg.modelWaitStartedAt = null;
           targetMsg.agentSteps = [...(targetMsg.agentSteps || []), data.data];
         }
         newMessages[targetIdx] = targetMsg;
@@ -512,6 +541,7 @@ function App() {
         if (!n.length) return prev;
         const last = { ...n[n.length - 1] };
         last.isComplete = true;
+        last.modelWaitStartedAt = null;
         if (typeof result === 'string' && result.startsWith('Error:')) last.content += `\n\n**[Error]**\n${result}`;
         n[n.length - 1] = last;
         return n;
@@ -521,7 +551,9 @@ function App() {
         const n = [...prev];
         if (!n.length) return prev;
         const last = { ...n[n.length - 1] };
-        last.isComplete = true; last.content += `\n\n**[Error]**\n${e.message}`;
+        last.isComplete = true;
+        last.modelWaitStartedAt = null;
+        last.content += `\n\n**[Error]**\n${e.message}`;
         n[n.length - 1] = last;
         return n;
       });
@@ -537,6 +569,7 @@ function App() {
       if (!last.isComplete) {
         (window as any).ipcRenderer?.invoke('agent:stop-task', { runId: last.id }).catch(console.error);
         last.isComplete = true;
+        last.modelWaitStartedAt = null;
         last.content = (last.content || '') + '\n\n*[Stopped by user]*';
         n[n.length - 1] = last;
       }
@@ -782,7 +815,9 @@ function App() {
                 )}
                 {msg.statusLogs.length > 0 && !msg.isComplete && (
                   <div className="status-log" style={{ marginTop: '10px' }}>
-                    {msg.statusLogs[msg.statusLogs.length - 1]}
+                    {msg.modelWaitStartedAt
+                      ? `${MODEL_WAIT_STATUS} (${formatElapsed(msg.modelWaitStartedAt, statusNow)})`
+                      : msg.statusLogs[msg.statusLogs.length - 1]}
                     <div className="typing-indicator"><span/><span/><span/></div>
                   </div>
                 )}

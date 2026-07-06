@@ -17,6 +17,7 @@ export class WorkerEngine {
     workspacePath: string,
     onLog: (log: string) => void,
     onStep: (stepData: any) => void,
+    onModelWait: () => void,
     onOpenBrowser: (url: string) => void,
     onFileUpdated: (filePath: string, payload?: { startLine?: number; endLine?: number; oldContent?: string; newContent?: string; isEdit?: boolean }) => void,
     baseUrl: string,
@@ -127,6 +128,9 @@ export class WorkerEngine {
              }) : []
           };
           onStep(stepData);
+          if (stepData.results.length > 0) {
+            onModelWait();
+          }
         },
         system: `You are an AI Worker with direct access to the user's real filesystem and terminal.
 Workspace Path: ${workspacePath}

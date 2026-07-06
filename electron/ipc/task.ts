@@ -77,6 +77,9 @@ export function registerTaskHandlers() {
              event.sender.send('agent:update', { type: 'api-call', runId });
              event.sender.send('agent:update', { type: 'agent-step', data: stepData, runId });
           },
+          () => {
+             event.sender.send('agent:update', { type: 'model-wait-start', runId });
+          },
           (url: string) => {
              openBrowserPreview(url);
           },

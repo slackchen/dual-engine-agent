@@ -14,6 +14,7 @@ export interface Message {
   apiCallCount: number;
   isComplete?: boolean;
   plan?: any;
+  modelWaitStartedAt?: number | null;
 }
 
 export interface Conversation {
