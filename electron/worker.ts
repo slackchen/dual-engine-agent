@@ -1,4 +1,4 @@
-import { generateText, isStepCount } from 'ai';
+import { generateText } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -114,6 +114,8 @@ export class WorkerEngine {
                  toolName: r.toolName,
                  success,
                  message: resObj?.error || resObj?.message || 'Completed',
+                 filePath: resObj?.filePath,
+                 displayPath: resObj?.displayPath,
                  content: resObj?.content,
                  linesAdded: resObj?.linesAdded,
                  linesRemoved: resObj?.linesRemoved
@@ -134,7 +136,19 @@ CRITICAL INSTRUCTION: When mentioning file names, paths, shell commands, or tech
 CRITICAL RULES:
 1. MUST use \`readFile\` to read files. NEVER use \`cat\` or \`less\` via \`runCommand\`.
 2. MUST use \`createFile\`, \`editFileContent\`, or \`writeFile\` to create or modify files. NEVER use \`sed\`, \`awk\`, \`echo\`, \`cat\`, or redirection via \`runCommand\` for file operations.
-3. MUST use \`openBrowser\` to preview HTML or web apps. NEVER use \`open\` via \`runCommand\`.`,
+3. MUST use \`openBrowser\` to preview HTML or web apps. NEVER use \`open\` via \`runCommand\`.
+
+FILE TOOL ARGUMENTS:
+- \`readFile\`: use exactly \`{ "filePath": "relative/path.ext" }\`.
+- \`createFile\` and \`writeFile\`: use exactly \`{ "filePath": "relative/path.ext", "content": "..." }\`.
+- \`editFileContent\`: use exactly \`{ "filePath": "relative/path.ext", "targetContent": "exact existing text", "replacementContent": "new text" }\`.
+- Always prefer a path relative to the workspace, such as \`src/App.tsx\` or \`js/main.js\`.
+- Before calling \`editFileContent\`, read the file first and copy an exact, unique block into \`targetContent\`. Do not use ellipses or summaries in \`targetContent\`.
+- Do not invent argument names such as \`filename\`, \`filepath\`, \`file\`, or \`target\`. The canonical key is \`filePath\`.
+
+BROWSER TOOL ARGUMENTS:
+- \`openBrowser\`: use exactly \`{ "urlOrFilePath": "index.html" }\` for a local file, or \`{ "urlOrFilePath": "http://localhost:5173/" }\` for a web URL.
+- For local previews, prefer a workspace-relative HTML path such as \`index.html\`. Do not pass an empty object.`,
         messages: [
           ...chatHistory,
           { role: 'user', content: `Task: ${taskDescription}` }

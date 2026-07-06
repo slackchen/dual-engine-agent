@@ -13,10 +13,25 @@ interface ToolCallViewProps {
   setDiffState: React.Dispatch<React.SetStateAction<{original: string, modified: string, startLine?: number} | null>>;
 }
 
+function getToolFilePath(act: any, res: any): string {
+  const args = act?.args ?? {};
+  return args.filePath
+    || args.path
+    || args.targetFile
+    || args.AbsolutePath
+    || args.file_path
+    || args.file
+    || args.filename
+    || args.htmlFile
+    || args.htmlFilePath
+    || res?.filePath
+    || res?.displayPath
+    || '';
+}
+
 export function ToolCallView({ act, res, msg, idx, mergedSteps, openTabs, setOpenTabs, setActiveTab, setDiffState }: ToolCallViewProps) {
   const isCmd = act.toolName === 'runCommand' || act.toolName === 'run_command' || act.toolName === 'executeCommand';
   const isFileMod = act.toolName === 'editFileContent' || act.toolName === 'writeFile' || act.toolName === 'createFile' || act.toolName === 'multi_replace_file_content' || act.toolName === 'replace_file_content';
-  const _isReadFile = act.toolName === 'readFile' || act.toolName === 'viewFile' || act.toolName === 'read_file' || act.toolName === 'view_file';
   const hasArgs = act.args && Object.keys(act.args).length > 0;
 
   return (
@@ -51,7 +66,7 @@ export function ToolCallView({ act, res, msg, idx, mergedSteps, openTabs, setOpe
                 <span 
                   style={{ cursor: 'pointer', color: 'var(--accent)', textDecoration: 'underline' }}
                   onClick={() => {
-                    const tabName = act.args.filePath || act.args.targetFile || act.args.AbsolutePath || act.args.path;
+                    const tabName = getToolFilePath(act, res);
                     if (tabName && !openTabs.includes(tabName)) {
                       setOpenTabs(prev => [...prev, tabName]);
                     }

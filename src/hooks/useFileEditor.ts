@@ -15,6 +15,7 @@ export function useFileEditor(
     // @ts-ignore
     if (typeof window.ipcRenderer !== 'undefined') {
       const handleGlobalFileUpdate = (_event: any, data: any) => {
+        if (!data?.filePath) return;
         setOpenTabs(prev => (prev.includes(data.filePath) ? prev : [...prev, data.filePath]));
         setActiveTab(data.filePath);
         if (data.isEdit && data.oldContent && data.newContent) {

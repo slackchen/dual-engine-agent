@@ -1,6 +1,9 @@
 import { ipcMain, BrowserWindow } from 'electron';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export function openBrowserPreview(url: string) {
+  const finalUrl = normalizePreviewUrl(url);
   const previewWin = new BrowserWindow({
     width: 1024,
     height: 768,
@@ -25,7 +28,27 @@ export function openBrowserPreview(url: string) {
     }
   });
 
-  previewWin.loadURL(url);
+  previewWin.loadURL(finalUrl).catch((err) => {
+    console.error(`Failed to load preview URL ${finalUrl}:`, err);
+  });
+}
+
+function normalizePreviewUrl(url: string): string {
+  if (/^https?:\/\//i.test(url)) return url;
+
+  if (/^file:\/\//i.test(url)) {
+    try {
+      return pathToFileURL(fileURLToPath(url)).href;
+    } catch {
+      return pathToFileURL(decodeURIComponent(url.replace(/^file:\/\/\/?/i, ''))).href;
+    }
+  }
+
+  if (path.isAbsolute(url)) {
+    return pathToFileURL(url).href;
+  }
+
+  return url;
 }
 
 export function registerBrowserHandlers() {

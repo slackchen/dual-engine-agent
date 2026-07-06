@@ -1,7 +1,7 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import fs from 'node:fs';
-import path from 'node:path';
+import nodePath from 'node:path';
 import { resolveSafePath } from './utils';
 
 function calculateLineDiff(oldBlock: string, newBlock: string) {
@@ -34,18 +34,21 @@ export function createFSTools(
     readFile: tool({
       description: 'Read the contents of a file',
       parameters: z.object({
-        filePath: z.string().describe('Relative path to the file in the workspace')
-      }),
+        filePath: z.string().optional().describe('Relative path to the file in the workspace. Prefer this field name.'),
+        path: z.string().optional().describe('Alias for filePath.'),
+        targetFile: z.string().optional().describe('Alias for filePath.'),
+        AbsolutePath: z.string().optional().describe('Alias for filePath.')
+      }).passthrough(),
       // @ts-ignore
       execute: async (input: any) => {
-        let { filePath, path } = input ?? {};
-        filePath = filePath ?? path;
+        let { filePath, path, targetFile, AbsolutePath } = input ?? {};
+        filePath = filePath ?? path ?? targetFile ?? AbsolutePath;
         try {
           if (typeof filePath !== 'string' || !filePath) return { success: false, error: 'filePath is required.' };
           const fullPath = resolveSafePath(workspacePath, filePath);
           const content = fs.readFileSync(fullPath, 'utf8');
           onLog(`\n> 📖 Read file: ${filePath}\n`);
-          return { success: true, content };
+          return { success: true, content, filePath: fullPath, displayPath: filePath };
         } catch (e: any) {
           return { success: false, error: e.message };
         }
@@ -54,12 +57,18 @@ export function createFSTools(
     writeFile: tool({
       description: 'Write or overwrite a file',
       parameters: z.object({
-        filePath: z.string().optional().describe('Relative path to the file in the workspace'),
-        content: z.string().optional().describe('File content to write')
-      }),
+        filePath: z.string().optional().describe('Relative path to the file in the workspace. Prefer this field name.'),
+        path: z.string().optional().describe('Alias for filePath.'),
+        targetFile: z.string().optional().describe('Alias for filePath.'),
+        AbsolutePath: z.string().optional().describe('Alias for filePath.'),
+        content: z.string().optional().describe('File content to write'),
+        newContent: z.string().optional().describe('Alias for content.')
+      }).passthrough(),
       // @ts-ignore
       execute: async (input: any) => {
-        const { filePath, content } = input ?? {};
+        let { filePath, path, targetFile, AbsolutePath, content, newContent } = input ?? {};
+        filePath = filePath ?? path ?? targetFile ?? AbsolutePath;
+        content = content ?? newContent;
         try {
           if (typeof filePath !== 'string' || !filePath) return { success: false, error: 'filePath is required.' };
           if (typeof content !== 'string') return { success: false, error: 'content is required and must be a string.' };
@@ -72,12 +81,12 @@ export function createFSTools(
             oldLinesCount = oldContentStr ? oldContentStr.split('\n').length : 0;
           }
           
-          fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+          fs.mkdirSync(nodePath.dirname(fullPath), { recursive: true });
           fs.writeFileSync(fullPath, content, 'utf8');
           onLog(`\n> 📝 Wrote file: ${filePath}\n`);
           const numLines = content ? content.split('\n').length : 0;
           onFileUpdated(fullPath, { startLine: 1, endLine: numLines, oldContent: '', newContent: content, isEdit: false });
-          return { success: true, message: `File ${filePath} written.`, linesAdded: numLines, linesRemoved: oldLinesCount, actualOldContent: oldContentStr, actualNewContent: content };
+          return { success: true, message: `File ${filePath} written.`, filePath: fullPath, displayPath: filePath, linesAdded: numLines, linesRemoved: oldLinesCount, actualOldContent: oldContentStr, actualNewContent: content };
         } catch (e: any) {
           return { success: false, error: e.message };
         }
@@ -86,23 +95,44 @@ export function createFSTools(
     createFile: tool({
       description: 'Create a new file with the given content',
       parameters: z.object({
-        filePath: z.string().optional().describe('Relative path to the new file in the workspace'),
-        content: z.string().optional().describe('File content to create')
-      }),
+        filePath: z.string().optional().describe('Relative path to the new file in the workspace. Prefer this field name.'),
+        path: z.string().optional().describe('Alias for filePath.'),
+        targetFile: z.string().optional().describe('Alias for filePath.'),
+        AbsolutePath: z.string().optional().describe('Alias for filePath.'),
+        content: z.string().optional().describe('File content to create'),
+        newContent: z.string().optional().describe('Alias for content.')
+      }).passthrough(),
       // @ts-ignore
       execute: async (input: any) => {
-        const { filePath, content } = input ?? {};
+        let { filePath, path, targetFile, AbsolutePath, content, newContent } = input ?? {};
+        filePath = filePath ?? path ?? targetFile ?? AbsolutePath;
+        content = content ?? newContent;
         try {
           if (typeof filePath !== 'string' || !filePath) return { success: false, error: 'filePath is required.' };
           if (typeof content !== 'string') return { success: false, error: 'content is required and must be a string.' };
-          const fullPath = resolveSafePath(workspacePath, filePath);
-          if (fs.existsSync(fullPath)) return { success: false, error: `File already exists: ${filePath}. Use editFileContent or writeFile to modify it.` };
-          fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+          const fullPath = resolveSafePath(workspacePath, filePath, true);
+          if (fs.existsSync(fullPath)) {
+            const oldContent = fs.readFileSync(fullPath, 'utf8');
+            if (oldContent === content) {
+              return {
+                success: true,
+                message: `File ${filePath} already exists with identical content.`,
+                filePath: fullPath,
+                displayPath: filePath,
+                linesAdded: 0,
+                linesRemoved: 0,
+                actualOldContent: oldContent,
+                actualNewContent: content
+              };
+            }
+            return { success: false, error: `File already exists: ${filePath}. Use editFileContent or writeFile to modify it.` };
+          }
+          fs.mkdirSync(nodePath.dirname(fullPath), { recursive: true });
           fs.writeFileSync(fullPath, content, 'utf8');
           onLog(`\n> ✨ Created file: ${filePath}\n`);
           const numLines = content ? content.split('\n').length : 0;
           onFileUpdated(fullPath, { startLine: 1, endLine: numLines, oldContent: '', newContent: content, isEdit: false });
-          return { success: true, message: `File ${filePath} created.`, linesAdded: numLines, linesRemoved: 0, actualOldContent: '', actualNewContent: content };
+          return { success: true, message: `File ${filePath} created.`, filePath: fullPath, displayPath: filePath, linesAdded: numLines, linesRemoved: 0, actualOldContent: '', actualNewContent: content };
         } catch (e: any) {
           return { success: false, error: e.message };
         }
@@ -111,20 +141,25 @@ export function createFSTools(
     editFileContent: tool({
       description: 'Modify specific lines in an existing file using precise target content replacement. Use this to patch code instead of rewriting the whole file.',
       parameters: z.object({
-        filePath: z.string().optional().describe('Relative path to the file to edit'),
+        filePath: z.string().optional().describe('Relative path to the file to edit. Prefer this field name.'),
+        path: z.string().optional().describe('Alias for filePath.'),
+        targetFile: z.string().optional().describe('Alias for filePath.'),
+        AbsolutePath: z.string().optional().describe('Alias for filePath.'),
         targetContent: z.string().optional().describe('The EXACT existing content to be replaced. NEVER use "..." to omit lines. Must be the exact text.'),
         replacementContent: z.string().optional().describe('The new content to insert in place of the targetContent'),
         // Aliases to handle common LLM parameter hallucinations
         oldContent: z.string().optional(),
+        targetText: z.string().optional(),
         target_content: z.string().optional(),
         newContent: z.string().optional(),
+        replacementText: z.string().optional(),
         replacement_content: z.string().optional()
-      }),
+      }).passthrough(),
       // @ts-ignore
       execute: async (input: any) => {
-        const filePath = input?.filePath;
-        const targetContent = input?.targetContent ?? input?.oldContent ?? input?.target_content;
-        const replacementContent = input?.replacementContent ?? input?.newContent ?? input?.replacement_content;
+        const filePath = input?.filePath ?? input?.path ?? input?.targetFile ?? input?.AbsolutePath;
+        const targetContent = input?.targetContent ?? input?.oldContent ?? input?.targetText ?? input?.target_content;
+        const replacementContent = input?.replacementContent ?? input?.newContent ?? input?.replacementText ?? input?.replacement_content;
         
         try {
           if (typeof filePath !== 'string' || !filePath) {
@@ -162,7 +197,7 @@ export function createFSTools(
             const actualOldContentBlock = normalizedTarget;
             const actualNewContentBlock = replacementContent.replace(/\r\n/g, '\n');
             const diff = calculateLineDiff(actualOldContentBlock, actualNewContentBlock);
-            return { success: true, message: `Successfully updated ${filePath}`, linesAdded: diff.added, linesRemoved: diff.removed, actualOldContent: actualOldContentBlock, actualNewContent: actualNewContentBlock };
+            return { success: true, message: `Successfully updated ${filePath}`, filePath: fullPath, displayPath: filePath, linesAdded: diff.added, linesRemoved: diff.removed, actualOldContent: actualOldContentBlock, actualNewContent: actualNewContentBlock };
           }
 
           // Fallback: Fuzzy matcher (ignores indentation AND empty lines)
@@ -224,7 +259,7 @@ export function createFSTools(
           onLog(`\n> ✂️ Edited file: ${filePath} (Fuzzy match applied)\n`);
           onFileUpdated(fullPath, { startLine: matchStartIndex + 1, endLine: matchStartIndex + adjustedReplacementLines.length, oldContent, newContent, isEdit: true });
           const diff = calculateLineDiff(actualOldContentBlock, actualNewContentBlock);
-          return { success: true, message: `Successfully updated ${filePath}`, linesAdded: diff.added, linesRemoved: diff.removed, actualOldContent: actualOldContentBlock, actualNewContent: actualNewContentBlock };
+          return { success: true, message: `Successfully updated ${filePath}`, filePath: fullPath, displayPath: filePath, linesAdded: diff.added, linesRemoved: diff.removed, actualOldContent: actualOldContentBlock, actualNewContent: actualNewContentBlock };
         } catch (e: any) {
           return { success: false, error: e.message };
         }

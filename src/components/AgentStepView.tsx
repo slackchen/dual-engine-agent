@@ -13,6 +13,22 @@ interface AgentStepViewProps {
   setDiffState: React.Dispatch<React.SetStateAction<{original: string, modified: string, startLine?: number} | null>>;
 }
 
+function getToolFilePath(act: any, res: any): string {
+  const args = act?.args ?? {};
+  return args.filePath
+    || args.path
+    || args.targetFile
+    || args.AbsolutePath
+    || args.file_path
+    || args.file
+    || args.filename
+    || args.htmlFile
+    || args.htmlFilePath
+    || res?.filePath
+    || res?.displayPath
+    || '';
+}
+
 export function AgentStepView({ step, idx, mergedSteps, msg, openTabs, setOpenTabs, setActiveTab, setDiffState }: AgentStepViewProps) {
   return (
     <div className="agent-step-item" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '8px', fontSize: '12px' }}>
@@ -44,7 +60,7 @@ export function AgentStepView({ step, idx, mergedSteps, msg, openTabs, setOpenTa
                   };
 
                   if (isFileMod || isReadFile) {
-                    const fullPath = act.args?.filePath || act.args?.targetFile || act.args?.AbsolutePath || act.args?.path;
+                    const fullPath = getToolFilePath(act, res);
                     const fileName = (fullPath || 'file').split(/[/\\]/).pop();
                     
                     const fileNameSpan = (

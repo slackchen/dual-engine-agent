@@ -17,7 +17,11 @@ export function useChatScroll(messages: any[]) {
   const scrollToBottom = useCallback((smooth = true) => {
     const container = chatContainerRef.current;
     if (!container) return;
-    container.scrollTo({ top: container.scrollHeight, behavior: smooth ? 'smooth' : 'instant' });
+    if (smooth) {
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    } else {
+      container.scrollTop = container.scrollHeight;
+    }
   }, []);
 
   // Initial load: jump to bottom instantly when messages first populate
@@ -29,19 +33,21 @@ export function useChatScroll(messages: any[]) {
     }
   }, [messages, scrollToBottom]);
 
-  // Auto-scroll on new messages while at bottom
-  const prevMsgCount = useRef(0);
+  // Auto-scroll on message updates while the user is still pinned near bottom.
   useEffect(() => {
-    const newCount = messages.length;
-    const isNewMessage = newCount > prevMsgCount.current;
-    prevMsgCount.current = newCount;
-
     if (!hasInitialScrolled.current) return;
-    if (!isNewMessage) return;
+    if (userScrolledUp.current) return;
 
-    if (!userScrolledUp.current) {
-      requestAnimationFrame(() => scrollToBottom(true));
-    }
+    let secondFrame = 0;
+    const firstFrame = requestAnimationFrame(() => {
+      scrollToBottom(false);
+      secondFrame = requestAnimationFrame(() => scrollToBottom(false));
+    });
+
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      if (secondFrame) cancelAnimationFrame(secondFrame);
+    };
   }, [messages, scrollToBottom]);
 
   /** Call this before adding a user message to ensure chat jumps to bottom */

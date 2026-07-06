@@ -21,6 +21,35 @@ body, html, #root {
   overflow: hidden;
 }
 
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #4a4a4a #1e1e1e;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  background: #1e1e1e;
+}
+
+*::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 32px;
+  background: #4a4a4a;
+  border: 2px solid #1e1e1e;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #5a5a5a;
+}
+
+*::-webkit-scrollbar-corner {
+  background: #1e1e1e;
+}
+
 .app-container {
   display: flex;
   height: 100%;
@@ -46,6 +75,7 @@ body, html, #root {
   flex: 1;
   overflow-y: auto;
   padding: 10px;
+  scrollbar-gutter: stable;
 }
 
 .file-item {
@@ -76,6 +106,7 @@ body, html, #root {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  scrollbar-gutter: stable;
 }
 @keyframes slideUpFadeIn {
   from {
@@ -150,6 +181,10 @@ body, html, #root {
 .editor-container {
   flex: 1;
   background-color: var(--bg-primary);
+}
+
+.terminal-container {
+  scrollbar-gutter: stable;
 }
 
 /* Enhanced UI Styles */

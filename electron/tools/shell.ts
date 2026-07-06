@@ -20,7 +20,20 @@ export function createShellTools(
         }
         onLog(`\n> ${command}\n`);
         return new Promise((resolve) => {
-          const child = exec(command, { cwd: workspacePath });
+          const shellCommand = process.platform === 'win32'
+            ? `chcp 65001 > nul && ${command}`
+            : command;
+          const child = exec(shellCommand, {
+            cwd: workspacePath,
+            env: {
+              ...process.env,
+              LANG: 'en_US.UTF-8',
+              LC_ALL: 'en_US.UTF-8',
+              PYTHONIOENCODING: 'utf-8'
+            },
+            encoding: 'utf8',
+            windowsHide: true
+          });
           let output = '';
           
           child.stdout?.on('data', (data) => {

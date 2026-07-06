@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import './index.css';
 // @ts-ignore
 import Editor, { DiffEditor } from '@monaco-editor/react';
@@ -35,6 +35,13 @@ const parseReasoning = (content: string) => {
   return { reasoning: '', finalContent: content };
 };
 
+const ApiCallsBadge = ({ count }: { count: number }) => (
+  <span style={{ backgroundColor: 'var(--bg-secondary)', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+    <span aria-hidden="true">🤖</span>
+    API Calls: {count}
+  </span>
+);
+
 function App() {
   // ─── Config & Provider ───────────────────────────────────────────
   const config = useAppConfig();
@@ -62,7 +69,7 @@ function App() {
   const {
     workspacePath,
     setWorkspacePath,
-    fileTree,
+    fileTree, setFileTree,
     openTabs, setOpenTabs,
     activeTab, setActiveTab,
     contextMenu, setContextMenu,
@@ -113,6 +120,53 @@ function App() {
     resetScrollPosition,
     userScrolledUp,
   } = scroll;
+
+  const messageItemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [messageExceedsViewport, setMessageExceedsViewport] = useState<Record<string, boolean>>({});
+
+  const setMessageItemRef = useCallback((id: string, element: HTMLDivElement | null) => {
+    if (element) {
+      messageItemRefs.current.set(id, element);
+    } else {
+      messageItemRefs.current.delete(id);
+    }
+  }, []);
+
+  const measureMessageHeights = useCallback(() => {
+    const chatHeight = chatContainerRef.current?.clientHeight ?? 0;
+    if (!chatHeight) return;
+
+    const next: Record<string, boolean> = {};
+    messageItemRefs.current.forEach((element, id) => {
+      next[id] = element.scrollHeight > chatHeight;
+    });
+
+    setMessageExceedsViewport(prev => {
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(next);
+      if (prevKeys.length === nextKeys.length && nextKeys.every(key => prev[key] === next[key])) {
+        return prev;
+      }
+      return next;
+    });
+  }, [chatContainerRef]);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(measureMessageHeights);
+    const resizeObserver = new ResizeObserver(measureMessageHeights);
+
+    if (chatContainerRef.current) {
+      resizeObserver.observe(chatContainerRef.current);
+    }
+    messageItemRefs.current.forEach(element => resizeObserver.observe(element));
+    window.addEventListener('resize', measureMessageHeights);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', measureMessageHeights);
+    };
+  }, [messages, measureMessageHeights, chatContainerRef]);
 
   // ─── Resizers ─────────────────────────────────────────────────────
   const { startResizing: startResizingSidebar } = useResizer(250, 'right', '--sidebar-width');
@@ -175,7 +229,10 @@ function App() {
     // @ts-ignore
     if (typeof window.ipcRenderer === 'undefined') { console.error('ipcRenderer unavailable'); return; }
     const listener = (_event: any, data: any) => {
-      if (data.type === 'fs-state') { workspace.fileTree; return; } // handled by workspace
+      if (data.type === 'fs-state') {
+        setFileTree(Array.isArray(data.data) ? data.data : []);
+        return;
+      }
       setMessages(prev => {
         const newMessages = [...prev];
         if (newMessages.length === 0) return prev;
@@ -493,12 +550,12 @@ function App() {
           </div>
           <div className="chat-messages" ref={chatContainerRef} onScroll={handleChatScroll} style={{ position: 'relative' }}>
             {messages.map((msg) => (
-              <div key={msg.id} className={`message ${msg.role}`}>
+              <div key={msg.id} ref={(element) => setMessageItemRef(msg.id, element)} className={`message ${msg.role}`}>
                 {msg.role === 'ai' && (
                   <div className="message-header" style={{display: 'flex', justifyContent: 'space-between'}}>
                     <span>Dual-Engine Agent</span>
                     {msg.apiCallCount > 0 && (
-                      <span style={{backgroundColor: 'var(--bg-secondary)', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', color: 'var(--accent)'}}>🤖 API Calls: {msg.apiCallCount}</span>
+                      <ApiCallsBadge count={msg.apiCallCount} />
                     )}
                   </div>
                 )}
@@ -607,6 +664,12 @@ function App() {
                   <div className="status-log" style={{ marginTop: '10px' }}>
                     {msg.statusLogs[msg.statusLogs.length - 1]}
                     <div className="typing-indicator"><span/><span/><span/></div>
+                  </div>
+                )}
+
+                {msg.role === 'ai' && msg.apiCallCount > 0 && messageExceedsViewport[msg.id] && (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px' }}>
+                    <ApiCallsBadge count={msg.apiCallCount} />
                   </div>
                 )}
               </div>

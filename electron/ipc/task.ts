@@ -9,7 +9,7 @@ export function registerTaskHandlers() {
   const worker = new WorkerEngine();
   const abortControllers: Record<string, AbortController> = {};
 
-  ipcMain.handle('agent:stop-task', (event, { runId }) => {
+  ipcMain.handle('agent:stop-task', (_event, { runId }) => {
     if (abortControllers[runId]) {
       abortControllers[runId].abort();
       delete abortControllers[runId];
