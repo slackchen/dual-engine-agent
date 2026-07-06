@@ -16,6 +16,7 @@ export interface Message {
   workerApiCallCount?: number;
   isComplete?: boolean;
   plan?: any;
+  finalSummary?: string;
   modelWaitStartedAt?: number | null;
 }
 

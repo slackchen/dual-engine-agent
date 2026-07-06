@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties, type ReactNode } from 'react';
 import './index.css';
 // @ts-ignore
 import Editor, { DiffEditor } from '@monaco-editor/react';
@@ -10,7 +10,7 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { FileTreeNode } from './components/FileTreeNode';
 import { ContextMenu } from './components/ContextMenu';
 import { HistoryModal } from './components/HistoryModal';
-import { SettingsModal } from './components/SettingsModal';
+import { SettingsModal, type SettingsTab } from './components/SettingsModal';
 import { AgentStepView } from './components/AgentStepView';
 import { ChatInputBox } from './components/ChatInputBox';
 import { applyConverterPlugin, NO_CONVERTER_PLUGIN_ID } from './converterPlugins';
@@ -18,7 +18,7 @@ import { applyConverterPlugin, NO_CONVERTER_PLUGIN_ID } from './converterPlugins
 
 
 import { useResizer } from './hooks/useResizer';
-import { useAppConfig, type ProviderConfig } from './hooks/useAppConfig';
+import { useAppConfig, type AppSettingsValues, type ProviderConfig } from './hooks/useAppConfig';
 import { useWorkspace } from './hooks/useWorkspace';
 import { useConversations } from './hooks/useConversations';
 import { useFileEditor } from './hooks/useFileEditor';
@@ -70,6 +70,70 @@ const filterModelsForProvider = (providerConfig: ProviderConfig, models: string[
   return models;
 };
 
+interface SettingsHostProps {
+  children: ReactNode;
+  buttonStyle: CSSProperties;
+  providerConfigs: ProviderConfig[];
+  modelsByConfigId: Record<string, string[]>;
+  loadingModelsByConfigId: Record<string, boolean>;
+  activeProviderConfigId: string;
+  onApplySettings: (settings: AppSettingsValues) => void;
+  plannerProviderConfigId: string;
+  plannerModel: string;
+  workerProviderConfigId: string;
+  workerModel: string;
+  maxSteps: number;
+  showHiddenFiles: boolean;
+  handleOAuthLogin: () => Promise<string | null>;
+}
+
+const SettingsHost = ({
+  children,
+  buttonStyle,
+  providerConfigs,
+  modelsByConfigId,
+  loadingModelsByConfigId,
+  activeProviderConfigId,
+  onApplySettings,
+  plannerProviderConfigId,
+  plannerModel,
+  workerProviderConfigId,
+  workerModel,
+  maxSteps,
+  showHiddenFiles,
+  handleOAuthLogin,
+}: SettingsHostProps) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<SettingsTab>('auth');
+
+  return (
+    <>
+      <button onClick={() => setIsOpen(true)} style={buttonStyle}>
+        {children}
+      </button>
+      {isOpen && (
+        <SettingsModal
+          onClose={() => setIsOpen(false)}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          providerConfigs={providerConfigs}
+          modelsByConfigId={modelsByConfigId}
+          loadingModelsByConfigId={loadingModelsByConfigId}
+          activeProviderConfigId={activeProviderConfigId}
+          onApplySettings={onApplySettings}
+          plannerProviderConfigId={plannerProviderConfigId}
+          plannerModel={plannerModel}
+          workerProviderConfigId={workerProviderConfigId}
+          workerModel={workerModel}
+          maxSteps={maxSteps}
+          showHiddenFiles={showHiddenFiles}
+          handleOAuthLogin={handleOAuthLogin}
+        />
+      )}
+    </>
+  );
+};
+
 function App() {
   // ─── Config & Provider ───────────────────────────────────────────
   const config = useAppConfig();
@@ -77,18 +141,15 @@ function App() {
     providerConfigs,
     activeProviderConfigId,
     activeProviderConfig,
-    setActiveProviderConfigId,
     plannerProviderConfigId,
     setPlannerProviderConfigId,
     workerProviderConfigId,
     setWorkerProviderConfigId,
-    updateProviderConfig,
-    addProviderConfig,
-    deleteProviderConfig,
+    applySettings,
     plannerModel, setPlannerModel,
     workerModel, setWorkerModel,
-    maxSteps, setMaxSteps,
-    showHiddenFiles, setShowHiddenFiles,
+    maxSteps,
+    showHiddenFiles,
     lastWorkspacePath,
     isGlobalLoaded,
     saveWorkspacePath,
@@ -143,8 +204,6 @@ function App() {
 
   const plannerAvailableModels = modelsByConfigId[plannerProviderConfig.id] || [];
   const workerAvailableModels = modelsByConfigId[workerProviderConfig.id] || [];
-  const isLoadingPlannerModels = !!loadingModelsByConfigId[plannerProviderConfig.id];
-  const isLoadingWorkerModels = !!loadingModelsByConfigId[workerProviderConfig.id];
 
   // ─── Workspace & File Tree ────────────────────────────────────────
   const workspace = useWorkspace(showHiddenFiles);
@@ -269,13 +328,28 @@ function App() {
   const { startResizing: startResizingTerminal } = useResizer(200, 'top', '--terminal-height');
 
   // ─── Local UI State ───────────────────────────────────────────────
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [activeSettingsTab, setActiveSettingsTab] = useState<'general' | 'auth' | 'models'>('auth');
   const [terminalLogs, setTerminalLogs] = useState('');
-  const [isRunning, setIsRunning] = useState(false);
+  const [runningRunIds, setRunningRunIds] = useState<string[]>([]);
+  const runningRunIdsRef = useRef<Set<string>>(new Set());
+  const activeRunIdRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalUserScrolledUp = useRef(false);
+  const hasIncompleteAiMessage = useMemo(
+    () => messages.some(m => m.role === 'ai' && !m.isComplete),
+    [messages]
+  );
+  const isRunning = runningRunIds.length > 0 || hasIncompleteAiMessage;
+
+  const markRunActive = useCallback((runId: string) => {
+    runningRunIdsRef.current.add(runId);
+    setRunningRunIds(Array.from(runningRunIdsRef.current));
+  }, []);
+
+  const markRunInactive = useCallback((runId: string) => {
+    runningRunIdsRef.current.delete(runId);
+    setRunningRunIds(Array.from(runningRunIdsRef.current));
+  }, []);
 
   // ─── Terminal auto-scroll ─────────────────────────────────────────
   const handleTerminalScroll = useCallback(() => {
@@ -350,6 +424,9 @@ function App() {
     // @ts-ignore
     if (typeof window.ipcRenderer === 'undefined') { console.error('ipcRenderer unavailable'); return; }
     const listener = (_event: any, data: any) => {
+      if (data.runId && !runningRunIdsRef.current.has(data.runId)) {
+        return;
+      }
       if (data.type === 'fs-state') {
         setFileTree(Array.isArray(data.data) ? data.data : []);
         return;
@@ -360,10 +437,12 @@ function App() {
         let targetIdx = newMessages.length - 1;
         if (data.runId) {
           const idx = newMessages.findIndex(m => m.id === data.runId);
-          if (idx !== -1) targetIdx = idx;
+          if (idx === -1) return prev;
+          targetIdx = idx;
         }
         const targetMsg = { ...newMessages[targetIdx] };
         if (targetMsg.role !== 'ai') return prev;
+        if (targetMsg.isComplete) return prev;
         if (data.type === 'status') {
           targetMsg.statusLogs = [...targetMsg.statusLogs, data.data];
           targetMsg.modelWaitStartedAt = null;
@@ -381,6 +460,10 @@ function App() {
           const resultStr = typeof data.data === 'string' ? data.data : JSON.stringify(data.data || '');
           const resultText = resultStr.split('\n').map((l: string) => `> ${l}`).join('\n');
           targetMsg.content += `### 🤖 Task Result\n${resultText}\n\n`;
+        } else if (data.type === 'final-result') {
+          targetMsg.modelWaitStartedAt = null;
+          const resultStr = typeof data.data === 'string' ? data.data : JSON.stringify(data.data || '');
+          targetMsg.finalSummary = resultStr;
         } else if (data.type === 'api-call') {
           targetMsg.apiCallCount = (targetMsg.apiCallCount || 0) + 1;
           if (data.data === 'planner') {
@@ -396,7 +479,13 @@ function App() {
         return newMessages;
       });
     };
-    const logListener = (_event: any, data: string) => setTerminalLogs(prev => prev + data);
+    const logListener = (_event: any, data: string | { runId?: string; log?: string }) => {
+      if (typeof data === 'object' && data?.runId && !runningRunIdsRef.current.has(data.runId)) {
+        return;
+      }
+      const log = typeof data === 'string' ? data : data?.log;
+      if (log) setTerminalLogs(prev => prev + log);
+    };
     // @ts-ignore
     window.ipcRenderer.removeAllListeners('agent:update');
     // @ts-ignore
@@ -478,26 +567,24 @@ function App() {
       addSystemMsg('[System] Opening browser for Google OAuth login...');
       // @ts-ignore
       const token = await window.ipcRenderer.invoke('agent:login-oauth');
-      updateProviderConfig(activeProviderConfig.id, { googleOauthToken: token });
       addSystemMsg('[System] Google OAuth login successful!');
+      return typeof token === 'string' ? token : null;
     } catch (err: any) { addSystemMsg(`[System Error] OAuth login failed: ${err.message}`); }
-  };
-
-  const handleLogout = () => {
-    updateProviderConfig(activeProviderConfig.id, { googleOauthToken: '' });
-    setModelsByConfigId(prev => ({ ...prev, [activeProviderConfig.id]: [] }));
-    addSystemMsg('[System] Logged out successfully. Token cleared.');
+    return null;
   };
 
   // ─── Send message ─────────────────────────────────────────────────
   const handleSend = async (userTask: string) => {
     if (!userTask.trim()) return;
+    if (runningRunIdsRef.current.size > 0 || hasIncompleteAiMessage) return;
     const plannerRuntime = getProviderRuntime(plannerProviderConfig, plannerModel);
     const workerRuntime = getProviderRuntime(workerProviderConfig, workerModel);
     if (!plannerRuntime.tokenOrKey) { alert(`Please configure credentials for ${plannerProviderConfig.name} first!`); return; }
     if (!workerRuntime.tokenOrKey) { alert(`Please configure credentials for ${workerProviderConfig.name} first!`); return; }
 
     const newAiMsgId = crypto.randomUUID();
+    activeRunIdRef.current = newAiMsgId;
+    markRunActive(newAiMsgId);
     resetScrollPosition();
     terminalUserScrolledUp.current = false;
     scrollTerminalToBottom();
@@ -511,6 +598,9 @@ function App() {
       .filter(m => m.id !== 'init')
       .map(m => {
         let textContent = m.content || '';
+        if (m.role === 'ai' && m.finalSummary) {
+          textContent = `${textContent}\n\nFinal Summary:\n${m.finalSummary}`.trim();
+        }
         if (m.role === 'ai' && !textContent && m.agentSteps?.length > 0) {
           const toolsUsed = m.agentSteps.flatMap(s => (s.actions || []).map((a: any) => a.toolName)).filter(Boolean);
           if (toolsUsed.length > 0) textContent = `[Executed tools: ${toolsUsed.join(', ')}]`;
@@ -521,10 +611,17 @@ function App() {
 
     // @ts-ignore
     if (typeof window.ipcRenderer === 'undefined') {
-      setMessages(prev => { const n = [...prev]; n[n.length-1].content = '[Error] ipcRenderer is not available.'; n[n.length-1].isComplete = true; return n; });
+      setMessages(prev => {
+        const n = [...prev];
+        const idx = n.findIndex(m => m.id === newAiMsgId);
+        if (idx === -1) return prev;
+        n[idx] = { ...n[idx], content: '[Error] ipcRenderer is not available.', isComplete: true, modelWaitStartedAt: null };
+        return n;
+      });
+      if (activeRunIdRef.current === newAiMsgId) activeRunIdRef.current = null;
+      markRunInactive(newAiMsgId);
       return;
     }
-    setIsRunning(true);
     try {
       // @ts-ignore
       const result = await window.ipcRenderer.invoke('agent:run-task', {
@@ -554,42 +651,71 @@ function App() {
       });
       setMessages(prev => {
         const n = [...prev];
-        if (!n.length) return prev;
-        const last = { ...n[n.length - 1] };
-        last.isComplete = true;
-        last.modelWaitStartedAt = null;
-        if (typeof result === 'string' && result.startsWith('Error:')) last.content += `\n\n**[Error]**\n${result}`;
-        n[n.length - 1] = last;
+        const idx = n.findIndex(m => m.id === newAiMsgId);
+        if (idx === -1) return prev;
+        const target = { ...n[idx] };
+        if (target.isComplete) return prev;
+        target.isComplete = true;
+        target.modelWaitStartedAt = null;
+        if (typeof result === 'string' && result.startsWith('Error:')) target.content += `\n\n**[Error]**\n${result}`;
+        n[idx] = target;
         return n;
       });
     } catch (e: any) {
       setMessages(prev => {
         const n = [...prev];
-        if (!n.length) return prev;
-        const last = { ...n[n.length - 1] };
-        last.isComplete = true;
-        last.modelWaitStartedAt = null;
-        last.content += `\n\n**[Error]**\n${e.message}`;
-        n[n.length - 1] = last;
+        const idx = n.findIndex(m => m.id === newAiMsgId);
+        if (idx === -1) return prev;
+        const target = { ...n[idx] };
+        if (target.isComplete) return prev;
+        target.isComplete = true;
+        target.modelWaitStartedAt = null;
+        target.content += `\n\n**[Error]**\n${e.message}`;
+        n[idx] = target;
         return n;
       });
-    } finally { setIsRunning(false); }
+    } finally {
+      if (activeRunIdRef.current === newAiMsgId) {
+        activeRunIdRef.current = null;
+      }
+      markRunInactive(newAiMsgId);
+    }
   };
 
   const handleStop = () => {
-    setIsRunning(false);
-    setMessages(prev => {
-      const n = [...prev];
-      if (!n.length) return prev;
-      const last = { ...n[n.length - 1] };
-      if (!last.isComplete) {
-        (window as any).ipcRenderer?.invoke('agent:stop-task', { runId: last.id }).catch(console.error);
-        last.isComplete = true;
-        last.modelWaitStartedAt = null;
-        last.content = (last.content || '') + '\n\n*[Stopped by user]*';
-        n[n.length - 1] = last;
+    const targetIds = new Set<string>(runningRunIdsRef.current);
+    if (activeRunIdRef.current) targetIds.add(activeRunIdRef.current);
+    messages.forEach(message => {
+      if (message.role === 'ai' && !message.isComplete) {
+        targetIds.add(message.id);
       }
-      return n;
+    });
+
+    if (targetIds.size === 0) return;
+
+    targetIds.forEach(runId => {
+      (window as any).ipcRenderer?.invoke('agent:stop-task', { runId }).catch(console.error);
+      markRunInactive(runId);
+    });
+    if (activeRunIdRef.current && targetIds.has(activeRunIdRef.current)) {
+      activeRunIdRef.current = null;
+    }
+
+    setMessages(prev => {
+      let changed = false;
+      const next = prev.map(message => {
+        if (message.role !== 'ai' || message.isComplete || !targetIds.has(message.id)) {
+          return message;
+        }
+        changed = true;
+        return {
+          ...message,
+          isComplete: true,
+          modelWaitStartedAt: null,
+          content: (message.content || '') + '\n\n*[Stopped by user]*',
+        };
+      });
+      return changed ? next : prev;
     });
   };
 
@@ -602,9 +728,23 @@ function App() {
       <div className="sidebar" style={{ width: 'var(--sidebar-width)', flexShrink: 0 }}>
         <div className="sidebar-header" style={{display:'flex', justifyContent: 'space-between', alignItems: 'center'}}>
            <div style={{fontWeight: 'bold'}}>Dual-Engine Agent</div>
-           <button onClick={() => setIsSettingsOpen(true)} style={{background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '14px'}}>
+           <SettingsHost
+             buttonStyle={{background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '14px'}}
+             providerConfigs={providerConfigs}
+             modelsByConfigId={modelsByConfigId}
+             loadingModelsByConfigId={loadingModelsByConfigId}
+             activeProviderConfigId={activeProviderConfigId}
+             onApplySettings={applySettings}
+             plannerProviderConfigId={plannerProviderConfig.id}
+             plannerModel={plannerModel}
+             workerProviderConfigId={workerProviderConfig.id}
+             workerModel={workerModel}
+             maxSteps={maxSteps}
+             showHiddenFiles={showHiddenFiles}
+             handleOAuthLogin={handleOAuthLogin}
+           >
              ⚙️ Settings
-           </button>
+           </SettingsHost>
         </div>
         <div className="file-tree">
           <div style={{color:'var(--text-secondary)', fontSize:'11px', marginBottom:'5px', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
@@ -789,7 +929,11 @@ function App() {
                       {msg.plan.subtasks.map((st: any, i: number) => (
                         <div key={st.id || i} className="plan-subtask-item">
                           <div className="subtask-desc">
-                            <span className="subtask-num">{i + 1}.</span>{' '}
+                            {msg.plan.subtasks.length > 1 && (
+                              <>
+                                <span className="subtask-num">{i + 1}.</span>{' '}
+                              </>
+                            )}
                             <span className="markdown-body" style={{ display: 'inline' }}>
                               <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ p: 'span' }}>{st.description}</ReactMarkdown>
                             </span>
@@ -826,6 +970,15 @@ function App() {
                     </div>
                   );
                 })()}
+
+                {msg.finalSummary && (
+                  <div className="markdown-body" style={{ marginTop: '10px' }}>
+                    <h3>✅ Final Summary</h3>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {msg.finalSummary}
+                    </ReactMarkdown>
+                  </div>
+                )}
 
                 {!msg.content && !msg.isComplete && msg.statusLogs.length === 0 && (
                   <div className="typing-indicator" style={{marginTop: '10px'}}><span/><span/><span/></div>
@@ -884,7 +1037,23 @@ function App() {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           Open Folder
         </button>
-        <button onClick={() => setIsSettingsOpen(true)} style={{marginTop: '40px', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '14px', textDecoration: 'underline'}}>Configure Settings</button>
+        <SettingsHost
+          buttonStyle={{marginTop: '40px', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '14px', textDecoration: 'underline'}}
+          providerConfigs={providerConfigs}
+          modelsByConfigId={modelsByConfigId}
+          loadingModelsByConfigId={loadingModelsByConfigId}
+          activeProviderConfigId={activeProviderConfigId}
+          onApplySettings={applySettings}
+          plannerProviderConfigId={plannerProviderConfig.id}
+          plannerModel={plannerModel}
+          workerProviderConfigId={workerProviderConfig.id}
+          workerModel={workerModel}
+          maxSteps={maxSteps}
+          showHiddenFiles={showHiddenFiles}
+          handleOAuthLogin={handleOAuthLogin}
+        >
+          Configure Settings
+        </SettingsHost>
       </div>
     )}
 
@@ -892,31 +1061,6 @@ function App() {
         <ContextMenu x={contextMenu.x} y={contextMenu.y} isDir={contextMenu.isDir} onAction={handleContextMenuAction} onClose={() => setContextMenu(null)} />
       )}
 
-      <SettingsModal
-        isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)}
-        activeTab={activeSettingsTab} setActiveTab={setActiveSettingsTab}
-        providerConfigs={providerConfigs}
-        modelsByConfigId={modelsByConfigId}
-        activeProviderConfigId={activeProviderConfigId}
-        activeProviderConfig={activeProviderConfig}
-        setActiveProviderConfigId={setActiveProviderConfigId}
-        updateProviderConfig={updateProviderConfig}
-        addProviderConfig={addProviderConfig}
-        deleteProviderConfig={deleteProviderConfig}
-        plannerProviderConfigId={plannerProviderConfig.id}
-        setPlannerProviderConfigId={setPlannerProviderConfigId}
-        plannerModel={plannerModel} setPlannerModel={setPlannerModel}
-        plannerAvailableModels={plannerAvailableModels}
-        isLoadingPlannerModels={isLoadingPlannerModels}
-        workerProviderConfigId={workerProviderConfig.id}
-        setWorkerProviderConfigId={setWorkerProviderConfigId}
-        workerModel={workerModel} setWorkerModel={setWorkerModel}
-        workerAvailableModels={workerAvailableModels}
-        isLoadingWorkerModels={isLoadingWorkerModels}
-        maxSteps={maxSteps} setMaxSteps={setMaxSteps}
-        showHiddenFiles={showHiddenFiles} setShowHiddenFiles={setShowHiddenFiles}
-        handleOAuthLogin={handleOAuthLogin} handleLogout={handleLogout}
-      />
       <HistoryModal
         isOpen={isHistoryOpen} onClose={() => setIsHistoryOpen(false)}
         conversations={conversations} currentConversationId={currentConversationId}

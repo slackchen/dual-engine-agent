@@ -59,7 +59,12 @@ export function createBrowserTools(
 
           onLog(`\n> Opening browser preview: ${finalUrl}\n`);
           onOpenBrowser(finalUrl);
-          return { success: true, message: `Opened browser for ${finalUrl}` };
+          return {
+            success: true,
+            message: `Opened browser for ${finalUrl}`,
+            url: finalUrl,
+            displayPath: target,
+          };
         } catch (e: any) {
           return { success: false, error: e.message };
         }

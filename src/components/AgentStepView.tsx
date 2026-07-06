@@ -32,6 +32,14 @@ function getToolFilePath(act: any, res: any): string {
 export function AgentStepView({ step, idx, mergedSteps, msg, openTabs, setOpenTabs, setActiveTab, setDiffState }: AgentStepViewProps) {
   return (
     <div className="agent-step-item" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '8px', fontSize: '12px' }}>
+      {step.workerTaskDescription && (
+        <div className="agent-worker-header">
+          <span className="agent-worker-badge">{step.workerInstance || 'Worker'}</span>
+          <span className="agent-worker-description" title={step.workerTaskDescription}>
+            {step.workerTaskDescription}
+          </span>
+        </div>
+      )}
       {step.thought && (
         <div style={{ marginBottom: '6px', color: '#4EC9B0' }}>
           <span style={{ marginRight: '4px' }}>🤖</span> {step.thought}
@@ -55,7 +63,7 @@ export function AgentStepView({ step, idx, mergedSteps, msg, openTabs, setOpenTa
               <span>
                 {isFileMod ? (act.toolName === 'createFile' ? '✨' : '✏️') : isCmd ? '🖥️' : isBrowser ? '🌐' : isReadFile ? '📖' : '🔧'}
               </span>
-              <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>
+              <span style={{ color: 'var(--text-primary)', fontWeight: 'bold', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {(() => {
                   const openFile = (fp: string) => {
                     if (fp && !openTabs.includes(fp)) {
@@ -131,7 +139,7 @@ export function AgentStepView({ step, idx, mergedSteps, msg, openTabs, setOpenTa
                 })()}
               </span>
               {res && (
-                <span style={{ marginLeft: 'auto', color: isCommandNonZero ? '#FFC107' : res.success ? '#4CAF50' : (msg.isComplete && idx === mergedSteps.length - 1) ? '#F44336' : '#FFC107' }}>
+                <span style={{ marginLeft: 'auto', flexShrink: 0, whiteSpace: 'nowrap', color: isCommandNonZero ? '#FFC107' : res.success ? '#4CAF50' : (msg.isComplete && idx === mergedSteps.length - 1) ? '#F44336' : '#FFC107' }}>
                   {isCommandNonZero ? `Exit ${res.exitCode ?? ''}` : res.success ? '✅' : (msg.isComplete && idx === mergedSteps.length - 1) ? '❌ Failed' : '⚠️ Retrying'}
                 </span>
               )}

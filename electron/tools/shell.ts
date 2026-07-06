@@ -37,13 +37,20 @@ function prefixStderr(text: string) {
 
 function createShellProcess(command: string, workspacePath: string, env: NodeJS.ProcessEnv) {
   if (process.platform === 'win32') {
+    const encodingBootstrap = [
+      '$OutputEncoding = New-Object System.Text.UTF8Encoding $false',
+      '[Console]::InputEncoding = $OutputEncoding',
+      '[Console]::OutputEncoding = $OutputEncoding',
+      'try { & chcp.com 65001 > $null } catch {}',
+    ].join('; ');
+
     return spawn('powershell.exe', [
       '-NoLogo',
       '-NoProfile',
       '-ExecutionPolicy',
       'Bypass',
       '-Command',
-      command,
+      `${encodingBootstrap}; ${command}`,
     ], {
       cwd: workspacePath,
       env,
@@ -62,7 +69,8 @@ function createShellProcess(command: string, workspacePath: string, env: NodeJS.
 
 export function createShellTools(
   workspacePath: string,
-  onLog: (log: string) => void
+  onLog: (log: string) => void,
+  abortSignal?: AbortSignal
 ) {
   return {
     runCommand: tool({
@@ -75,6 +83,9 @@ export function createShellTools(
         const { command } = input ?? {};
         if (typeof command !== 'string' || !command) {
           return { success: false, error: 'command is required and must be a string.' };
+        }
+        if (abortSignal?.aborted) {
+          return { success: false, error: 'Command stopped by user.' };
         }
         onLog(`\n> ${command}\n`);
         return new Promise((resolve) => {
@@ -90,12 +101,43 @@ export function createShellTools(
           const stderrDecoder = new CommandOutputDecoder();
           let settled = false;
           let timeout: ReturnType<typeof setTimeout> | null = null;
+          let abortHandler: (() => void) | null = null;
           const finish = (result: any) => {
             if (settled) return;
             settled = true;
             if (timeout) clearTimeout(timeout);
+            if (abortSignal && abortHandler) {
+              abortSignal.removeEventListener('abort', abortHandler);
+            }
             resolve(result);
           };
+
+          const killChildTree = () => {
+            if (process.platform === 'win32' && child.pid) {
+              spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+                windowsHide: true,
+                stdio: 'ignore',
+              }).on('error', () => {
+                child.kill();
+              });
+            } else {
+              child.kill('SIGTERM');
+            }
+          };
+
+          abortHandler = () => {
+            onLog('\n> Command stopped by user.\n');
+            killChildTree();
+            finish({ success: false, error: `Command stopped by user.\n${output}` });
+          };
+
+          if (abortSignal) {
+            if (abortSignal.aborted) {
+              abortHandler();
+              return;
+            }
+            abortSignal.addEventListener('abort', abortHandler, { once: true });
+          }
           
           child.stdout?.on('data', (data) => {
             const text = stdoutDecoder.decode(data);

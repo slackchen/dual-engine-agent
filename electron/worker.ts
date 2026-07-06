@@ -89,7 +89,7 @@ export class WorkerEngine {
         prepareStep: ({ stepNumber }) => (
           stepNumber === 0
             ? requiredTool
-              ? { toolChoice: { type: 'tool' as const, toolName: requiredTool as any } }
+              ? { activeTools: [requiredTool as any], toolChoice: 'required' as const }
               : { toolChoice: 'required' as const }
             : undefined
         ),
@@ -159,6 +159,7 @@ export class WorkerEngine {
                  exitCode: resObj?.exitCode,
                  pid: resObj?.pid,
                  message: resObj?.error || resObj?.message || 'Completed',
+                 url: resObj?.url,
                  filePath: resObj?.filePath,
                  displayPath: resObj?.displayPath,
                  content: resObj?.content,
@@ -228,7 +229,7 @@ APP TOOL ARGUMENTS:
         ],
         tools: {
           ...createFSTools(workspacePath, onLog, onFileUpdated),
-          ...createShellTools(workspacePath, onLog),
+          ...createShellTools(workspacePath, onLog, abortSignal),
           ...createBrowserTools(workspacePath, onLog, onOpenBrowser),
           ...createAppTools(workspacePath, onLog)
         }

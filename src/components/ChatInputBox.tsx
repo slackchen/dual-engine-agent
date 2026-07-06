@@ -236,7 +236,7 @@ export const ChatInputBox = memo(({
         onKeyDown={e => {
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
-            if (chatInput.trim()) {
+            if (!isRunning && chatInput.trim()) {
               onSend(chatInput);
               setChatInput('');
               setHistoryIndex(-1);
@@ -301,7 +301,7 @@ export const ChatInputBox = memo(({
           </button>
         ) : (
           <button onClick={() => {
-            if (chatInput.trim()) {
+            if (!isRunning && chatInput.trim()) {
               onSend(chatInput);
               setChatInput('');
               setHistoryIndex(-1);

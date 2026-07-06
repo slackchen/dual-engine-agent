@@ -346,6 +346,39 @@ body, html, #root {
   font-style: italic;
 }
 
+/* Agent Worker Step Header */
+.agent-worker-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 0 2px;
+}
+
+.agent-worker-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  padding: 0;
+  white-space: nowrap;
+  color: #7fb7d8;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.agent-worker-description {
+  min-width: 0;
+  color: #9a9a9a;
+  font-size: 11px;
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Multi-Tab Editor Styles */
 .tab-bar {
   display: flex;

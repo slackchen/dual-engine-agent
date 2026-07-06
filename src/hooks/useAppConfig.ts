@@ -16,6 +16,17 @@ export interface ProviderConfig {
   googleOauthToken?: string;
 }
 
+export interface AppSettingsValues {
+  providerConfigs: ProviderConfig[];
+  activeProviderConfigId: string;
+  plannerProviderConfigId: string;
+  workerProviderConfigId: string;
+  plannerModel: string;
+  workerModel: string;
+  maxSteps: number;
+  showHiddenFiles: boolean;
+}
+
 export interface AppConfig {
   providerConfigs: ProviderConfig[];
   activeProviderConfigId: string;
@@ -28,6 +39,7 @@ export interface AppConfig {
   updateProviderConfig: (id: string, patch: Partial<ProviderConfig>) => void;
   addProviderConfig: (provider?: Provider) => void;
   deleteProviderConfig: (id: string) => void;
+  applySettings: (settings: AppSettingsValues) => void;
 
   availableModels: string[];
   setAvailableModels: (v: string[]) => void;
@@ -286,6 +298,24 @@ export function useAppConfig(): AppConfig {
     });
   }, []);
 
+  const applySettings = useCallback((settings: AppSettingsValues) => {
+    const nextProviderConfigs = ensureUniqueConfigIds(
+      (settings.providerConfigs.length > 0 ? settings.providerConfigs : createDefaultProviderConfigs())
+        .map(normalizeProviderConfig)
+    );
+    const hasConfig = (id: string) => nextProviderConfigs.some(config => config.id === id);
+    const fallbackConfigId = nextProviderConfigs[0].id;
+
+    setProviderConfigs(nextProviderConfigs);
+    setActiveProviderConfigId(hasConfig(settings.activeProviderConfigId) ? settings.activeProviderConfigId : fallbackConfigId);
+    setPlannerProviderConfigId(hasConfig(settings.plannerProviderConfigId) ? settings.plannerProviderConfigId : fallbackConfigId);
+    setWorkerProviderConfigId(hasConfig(settings.workerProviderConfigId) ? settings.workerProviderConfigId : fallbackConfigId);
+    setPlannerModel(settings.plannerModel);
+    setWorkerModel(settings.workerModel);
+    setMaxSteps(Math.max(6, Math.min(50, Number.isFinite(settings.maxSteps) ? settings.maxSteps : 20)));
+    setShowHiddenFiles(settings.showHiddenFiles);
+  }, []);
+
   // Load global config on mount.
   useEffect(() => {
     // @ts-ignore
@@ -378,6 +408,7 @@ export function useAppConfig(): AppConfig {
     updateProviderConfig,
     addProviderConfig,
     deleteProviderConfig,
+    applySettings,
     availableModels,
     setAvailableModels,
     plannerModel,

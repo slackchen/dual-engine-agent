@@ -14,6 +14,7 @@ const CONVERT_MODELS = new Set([
 type JsonRecord = Record<string, any>;
 
 let server: http.Server | null = null;
+let proxyRequestSeq = 0;
 
 const readBody = (req: http.IncomingMessage) => new Promise<Buffer>((resolve, reject) => {
   const chunks: Buffer[] = [];
@@ -47,6 +48,8 @@ const normalizeBaseUrl = (baseUrl: string) => {
 };
 
 const shortId = () => randomUUID().replace(/-/g, '').slice(0, 24);
+
+const nextProxyRequestId = () => `rspx-${(++proxyRequestSeq).toString().padStart(5, '0')}`;
 
 const upstreamRoot = (baseUrl: string) => {
   const normalized = normalizeBaseUrl(baseUrl);
@@ -143,6 +146,50 @@ const messagesToResponsesInput = (messages: JsonRecord[]) => {
   return items;
 };
 
+const normalizeToolReferenceForResponses = (tool: unknown) => {
+  if (!tool || typeof tool !== 'object') return null;
+
+  const item = tool as JsonRecord;
+  const name = item.name || item.function?.name || item.custom?.name || item.toolName;
+  if (!name) return null;
+
+  return {
+    type: item.type === 'tool'
+      ? 'function'
+      : item.type || (item.function || item.toolName ? 'function' : item.custom ? 'custom' : undefined),
+    name,
+  };
+};
+
+const normalizeToolChoiceForResponses = (toolChoice: unknown) => {
+  if (typeof toolChoice === 'string') return toolChoice;
+  if (!toolChoice || typeof toolChoice !== 'object') return toolChoice;
+
+  const choice = toolChoice as JsonRecord;
+
+  if (choice.type === 'allowed_tools') {
+    const allowedTools = choice.allowed_tools && typeof choice.allowed_tools === 'object'
+      ? choice.allowed_tools as JsonRecord
+      : choice;
+    const tools = Array.isArray(allowedTools.tools)
+      ? allowedTools.tools.map(normalizeToolReferenceForResponses).filter(Boolean)
+      : [];
+
+    return {
+      type: 'allowed_tools',
+      mode: allowedTools.mode || choice.mode || 'auto',
+      tools,
+    };
+  }
+
+  const forcedTool = normalizeToolReferenceForResponses(choice);
+  if (forcedTool?.type && forcedTool.name) {
+    return forcedTool;
+  }
+
+  return choice;
+};
+
 const convertChatToResponses = (body: JsonRecord) => {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const systemTexts = messages
@@ -172,7 +219,7 @@ const convertChatToResponses = (body: JsonRecord) => {
   });
   if (responseTools.length > 0) output.tools = responseTools;
 
-  if (body.tool_choice !== undefined) output.tool_choice = body.tool_choice;
+  if (body.tool_choice !== undefined) output.tool_choice = normalizeToolChoiceForResponses(body.tool_choice);
   if (body.temperature !== undefined) output.temperature = body.temperature;
   if (body.top_p !== undefined) output.top_p = body.top_p;
   if (body.max_tokens !== undefined) output.max_output_tokens = body.max_tokens;
@@ -320,22 +367,26 @@ const handleChatCompletions = async (
   res: http.ServerResponse,
   upstreamBaseUrl: string,
   upstreamPath: string,
+  proxyRequestId: string,
 ) => {
   const rawBody = await readBody(req);
   let body: JsonRecord;
   try {
     body = JSON.parse(rawBody.toString('utf8'));
   } catch {
+    console.warn(`[BuiltInResponsesProxy:${proxyRequestId}] invalid JSON body`);
     sendJson(res, 400, { error: { message: 'invalid JSON body' } });
     return;
   }
 
   const model = body.model || '';
   if (!CONVERT_MODELS.has(model)) {
+    console.log(`[BuiltInResponsesProxy:${proxyRequestId}] pass-through chat/completions model=${model || '(missing)'}`);
     await passthrough(req, res, upstreamBaseUrl, upstreamPath, rawBody);
     return;
   }
 
+  console.log(`[BuiltInResponsesProxy:${proxyRequestId}] converting chat/completions model=${model} to responses`);
   const responsesBody = convertChatToResponses(body);
   const upstream = await fetch(`${upstreamRoot(upstreamBaseUrl)}/v1/responses`, {
     method: 'POST',
@@ -348,11 +399,13 @@ const handleChatCompletions = async (
   });
 
   if (!upstream.ok) {
+    console.warn(`[BuiltInResponsesProxy:${proxyRequestId}] upstream responses error status=${upstream.status}`);
     await sendRaw(res, upstream);
     return;
   }
 
   const events = parseSseEvents(await upstream.text());
+  console.log(`[BuiltInResponsesProxy:${proxyRequestId}] responses completed events=${events.length}`);
   sendJson(res, 200, responsesEventsToChatCompletion(model, events));
 };
 
@@ -376,7 +429,7 @@ export const startBuiltInResponsesProxy = () => {
       }
 
       if (req.method === 'POST' && parsed.upstreamPath.endsWith('/chat/completions')) {
-        await handleChatCompletions(req, res, parsed.upstreamBaseUrl, parsed.upstreamPath);
+        await handleChatCompletions(req, res, parsed.upstreamBaseUrl, parsed.upstreamPath, nextProxyRequestId());
         return;
       }
 
