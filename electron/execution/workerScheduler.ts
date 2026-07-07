@@ -3,6 +3,7 @@ import type { PlannerDecision, PlannerTask, RequiredTool } from '../planner';
 import { normalizeRequiredTool, VALID_REQUIRED_TOOLS } from './decisionUtils';
 import { evaluatePlannerToolPolicy } from './toolPolicy';
 import { traceEvent } from '../debugTrace';
+import type { TokenUsageSummary } from '../../src/shared/tokenUsage';
 
 const MAX_PARALLEL_WORKERS = 3;
 
@@ -27,6 +28,7 @@ interface ExecutePlannerDecisionArgs {
   onStatus: (status: string) => void;
   onLog: (log: string) => void;
   onWorkerApiCall: () => void;
+  onTokenUsage: (source: 'worker', usage: TokenUsageSummary, metadata: Record<string, unknown>) => void;
   onStep: (stepData: any) => void;
   onModelWait: () => void;
   onOpenBrowser: (url: string) => void;
@@ -233,6 +235,7 @@ async function executeOneTask(
     args.maxSteps || 20,
     runnable.requiredTool,
     args.abortSignal,
+    (usage, metadata) => args.onTokenUsage('worker', usage, metadata),
     {
       runId: args.runId,
       workerInstance: runnable.workerLabel,

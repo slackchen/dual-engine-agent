@@ -1,4 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
+import {
+  formatTokenUsageBrief,
+  formatTokenUsageDetail,
+  normalizeTokenUsage,
+  tokenUsageHasValues,
+} from './shared/tokenUsage';
 
 type DebugTraceEvent = {
   id: string;
@@ -59,6 +65,23 @@ function formatTime(timestamp: string) {
 
 function shortRunId(runId?: string) {
   return runId ? runId.slice(0, 8) : 'global';
+}
+
+function getTraceEventUsage(event: DebugTraceEvent) {
+  const data = event.data as any;
+  const usage = normalizeTokenUsage(data?.usage);
+  if (tokenUsageHasValues(usage)) return usage;
+
+  const stepUsage = normalizeTokenUsage(data?.stepData?.usage);
+  if (tokenUsageHasValues(stepUsage)) return stepUsage;
+
+  const chatCompletionUsage = normalizeTokenUsage(data?.chatCompletion?.usage);
+  if (tokenUsageHasValues(chatCompletionUsage)) return chatCompletionUsage;
+
+  const resultUsage = normalizeTokenUsage(data?.result?.usage || data?.rawResponse?.usage || data?.response?.usage);
+  if (tokenUsageHasValues(resultUsage)) return resultUsage;
+
+  return {};
 }
 
 export function DebugTraceApp() {
@@ -161,6 +184,7 @@ export function DebugTraceApp() {
           )}
           {filteredEvents.map(event => {
             const selected = selectedEvent?.id === event.id;
+            const usage = getTraceEventUsage(event);
             return (
               <button
                 key={event.id}
@@ -180,6 +204,7 @@ export function DebugTraceApp() {
                   <span>{formatTime(event.timestamp)}</span>
                   <span style={{ color: sourceColors[event.source] || '#d4d4d4' }}>{event.source}</span>
                   <span>{event.phase}</span>
+                  {tokenUsageHasValues(usage) && <span style={{ color: '#dcdcaa' }}>{formatTokenUsageBrief(usage)}</span>}
                   <span style={{ marginLeft: 'auto' }}>{shortRunId(event.runId)}</span>
                 </div>
                 <div style={{ fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -196,6 +221,9 @@ export function DebugTraceApp() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', fontSize: '12px' }}>
                 <span style={{ color: sourceColors[selectedEvent.source] || '#d4d4d4', fontWeight: 600 }}>{selectedEvent.source}</span>
                 <span>{selectedEvent.phase}</span>
+                {tokenUsageHasValues(getTraceEventUsage(selectedEvent)) && (
+                  <span style={{ color: '#dcdcaa' }}>{formatTokenUsageDetail(getTraceEventUsage(selectedEvent))}</span>
+                )}
                 <span style={{ color: '#8a8a8a' }}>{selectedEvent.timestamp}</span>
                 <span style={{ color: '#8a8a8a', marginLeft: 'auto' }}>{selectedEvent.runId || 'global'}</span>
               </div>

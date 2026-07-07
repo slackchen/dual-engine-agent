@@ -10,6 +10,7 @@ import {
 } from '../execution/decisionUtils';
 import { executePlannerDecision } from '../execution/workerScheduler';
 import { traceEvent } from '../debugTrace';
+import { normalizeTokenUsage, tokenUsageHasValues, type TokenUsageSummary } from '../../src/shared/tokenUsage';
 
 const MAX_CONTROLLER_DECISIONS = 20;
 
@@ -47,6 +48,36 @@ export function registerTaskHandlers() {
     if (signal.aborted) {
       throw new DOMException('Stopped by user', 'AbortError');
     }
+  };
+
+  const sendTokenUsage = (
+    sender: Electron.WebContents,
+    runId: string,
+    source: 'planner' | 'plan-session' | 'worker',
+    usage: TokenUsageSummary,
+    metadata: Record<string, unknown> = {}
+  ) => {
+    const normalizedUsage = normalizeTokenUsage(usage);
+    if (!tokenUsageHasValues(normalizedUsage)) return;
+    traceEvent({
+      runId,
+      source,
+      phase: 'usage',
+      title: `${source} token usage`,
+      data: {
+        usage: normalizedUsage,
+        metadata,
+      },
+    });
+    sender.send('agent:update', {
+      type: 'token-usage',
+      data: {
+        source,
+        usage: normalizedUsage,
+        metadata,
+      },
+      runId,
+    });
   };
 
   ipcMain.handle('agent:stop-task', (_event, { runId }) => {
@@ -117,7 +148,10 @@ export function registerTaskHandlers() {
           userReply,
         },
         signal,
-        { runId }
+        {
+          runId,
+          onTokenUsage: (usage, metadata) => sendTokenUsage(event.sender, runId, 'plan-session', usage, metadata),
+        }
       );
       throwIfAborted(signal);
       return result;
@@ -185,7 +219,10 @@ export function registerTaskHandlers() {
             chatHistory || [],
             { workspacePath, approvedPlan },
             signal,
-            { runId }
+            {
+              runId,
+              onTokenUsage: (usage, metadata) => sendTokenUsage(event.sender, runId, 'planner', usage, metadata),
+            }
           )
         : null;
 
@@ -201,7 +238,10 @@ export function registerTaskHandlers() {
           chatHistory || [],
           { workspacePath },
           signal,
-          { runId }
+          {
+            runId,
+            onTokenUsage: (usage, metadata) => sendTokenUsage(event.sender, runId, 'planner', usage, metadata),
+          }
         );
         plan.summary = initialPlanResult.summary;
         plan.subtasks = initialPlanResult.subtasks;
@@ -309,6 +349,9 @@ export function registerTaskHandlers() {
           onWorkerApiCall: () => {
             event.sender.send('agent:update', { type: 'api-call', data: 'worker', runId });
           },
+          onTokenUsage: (source, usage, metadata) => {
+            sendTokenUsage(event.sender, runId, source, usage, metadata);
+          },
           onStep: (stepData: any) => {
             event.sender.send('agent:update', { type: 'agent-step', data: stepData, runId });
           },
@@ -372,7 +415,10 @@ export function registerTaskHandlers() {
             decisionIndex,
           },
           signal,
-          { runId }
+          {
+            runId,
+            onTokenUsage: (usage, metadata) => sendTokenUsage(event.sender, runId, 'planner', usage, metadata),
+          }
         );
         throwIfAborted(signal);
 

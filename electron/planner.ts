@@ -3,6 +3,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { traceEvent } from './debugTrace';
+import { normalizeTokenUsage, type TokenUsageSummary } from '../src/shared/tokenUsage';
 
 export type RequiredTool =
   | 'readFile'
@@ -59,6 +60,7 @@ interface PlannerTraceContext {
   protocol: string;
   modelName: string;
   baseUrl: string;
+  onTokenUsage?: (usage: TokenUsageSummary, metadata: Record<string, unknown>) => void;
 }
 
 export class PlannerEngine {
@@ -153,6 +155,7 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
 
       const startedAt = Date.now();
       let text = '';
+      let usage: TokenUsageSummary = {};
       try {
         const result = await generateText({
           model,
@@ -161,6 +164,13 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
           messages: retryMessages
         });
         text = result.text;
+        usage = normalizeTokenUsage(result.usage);
+        traceContext?.onTokenUsage?.(usage, {
+          label,
+          attempt,
+          modelName: traceContext.modelName,
+          protocol: traceContext.protocol,
+        });
       } catch (error) {
         traceEvent({
           runId: traceContext?.runId,
@@ -187,6 +197,7 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
           attempt,
           durationMs: Date.now() - startedAt,
           text,
+          usage,
         },
       });
 
@@ -231,7 +242,7 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
       workspacePath: string;
     },
     abortSignal?: AbortSignal,
-    trace?: { runId?: string }
+    trace?: { runId?: string; onTokenUsage?: PlannerTraceContext['onTokenUsage'] }
   ): Promise<PlannerPlanResult> {
     const model = this.createModel(protocol, authMethod, tokenOrKey, modelName, baseUrl);
     const systemPrompt = `You are the Planner Controller for a Dual-Engine Agent desktop application.
@@ -334,7 +345,7 @@ Return ONLY this JSON schema:
         }
       ],
       abortSignal,
-      { runId: trace?.runId, protocol, modelName, baseUrl }
+      { runId: trace?.runId, protocol, modelName, baseUrl, onTokenUsage: trace?.onTokenUsage }
     );
 
     return {
@@ -359,7 +370,7 @@ Return ONLY this JSON schema:
       decisionIndex: number;
     },
     abortSignal?: AbortSignal,
-    trace?: { runId?: string }
+    trace?: { runId?: string; onTokenUsage?: PlannerTraceContext['onTokenUsage'] }
   ): Promise<PlannerDecision> {
     const model = this.createModel(protocol, authMethod, tokenOrKey, modelName, baseUrl);
     const systemPrompt = `You are the Planner Controller for a Dual-Engine Agent.
@@ -455,7 +466,7 @@ Return ONLY this JSON schema:
         }
       ],
       abortSignal,
-      { runId: trace?.runId, protocol, modelName, baseUrl }
+      { runId: trace?.runId, protocol, modelName, baseUrl, onTokenUsage: trace?.onTokenUsage }
     );
 
     return decision as PlannerDecision;
@@ -474,7 +485,7 @@ Return ONLY this JSON schema:
       approvedPlan: any;
     },
     abortSignal?: AbortSignal,
-    trace?: { runId?: string }
+    trace?: { runId?: string; onTokenUsage?: PlannerTraceContext['onTokenUsage'] }
   ): Promise<PlannerDecision> {
     const model = this.createModel(protocol, authMethod, tokenOrKey, modelName, baseUrl);
     const systemPrompt = `You are the Planner Controller for a Dual-Engine Agent desktop application.
@@ -563,7 +574,7 @@ Return ONLY this JSON schema:
         }
       ],
       abortSignal,
-      { runId: trace?.runId, protocol, modelName, baseUrl }
+      { runId: trace?.runId, protocol, modelName, baseUrl, onTokenUsage: trace?.onTokenUsage }
     );
 
     return decision as PlannerDecision;

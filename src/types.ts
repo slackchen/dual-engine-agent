@@ -1,3 +1,5 @@
+import type { TokenUsageSummary } from './shared/tokenUsage';
+
 export interface FileNode {
   name: string;
   path: string;
@@ -55,6 +57,9 @@ export interface Message {
   apiCallCount: number;
   plannerApiCallCount?: number;
   workerApiCallCount?: number;
+  tokenUsage?: TokenUsageSummary;
+  plannerTokenUsage?: TokenUsageSummary;
+  workerTokenUsage?: TokenUsageSummary;
   isComplete?: boolean;
   plan?: any;
   finalSummary?: string;

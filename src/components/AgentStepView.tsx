@@ -1,6 +1,7 @@
 import React from 'react';
 import { Message } from '../types';
 import { ToolCallView } from './ToolCallView';
+import { formatTokenUsageBrief, formatTokenUsageDetail, tokenUsageHasValues } from '../shared/tokenUsage';
 
 interface AgentStepViewProps {
   step: any;
@@ -38,6 +39,11 @@ export function AgentStepView({ step, idx, mergedSteps, msg, openTabs, setOpenTa
           <span className="agent-worker-description" title={step.workerTaskDescription}>
             {step.workerTaskDescription}
           </span>
+          {tokenUsageHasValues(step.usage) && (
+            <span className="agent-step-token-badge" title={formatTokenUsageDetail(step.usage)}>
+              {formatTokenUsageBrief(step.usage)}
+            </span>
+          )}
         </div>
       )}
       {step.thought && (

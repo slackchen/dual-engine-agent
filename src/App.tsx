@@ -17,6 +17,14 @@ import { PlanModeView } from './components/PlanModeView';
 import { applyConverterPlugin, NO_CONVERTER_PLUGIN_ID } from './converterPlugins';
 import { buildChatHistory, formatPlanSessionForHistory } from './chatHistory';
 import type { Message, PlanDraft, PlanSessionState, PlanSessionTurn } from './types';
+import {
+  addTokenUsage,
+  formatTokenCount,
+  formatTokenUsageDirectional,
+  formatTokenUsageDetail,
+  tokenUsageHasValues,
+  type TokenUsageSummary,
+} from './shared/tokenUsage';
 
 
 
@@ -26,6 +34,7 @@ import { useWorkspace } from './hooks/useWorkspace';
 import { useConversations } from './hooks/useConversations';
 import { useFileEditor } from './hooks/useFileEditor';
 import { useChatScroll } from './hooks/useChatScroll';
+import { useAnimatedTokenUsage } from './hooks/useAnimatedTokenUsage';
 
 const parseReasoning = (content: string) => {
   if (!content) return { reasoning: '', finalContent: '' };
@@ -46,6 +55,48 @@ const ApiCallsBadge = ({ count, plannerCount = 0, workerCount = 0, showBreakdown
   </span>
 );
 
+const TokenUsageBadge = ({ usage, plannerUsage, workerUsage }: { usage?: TokenUsageSummary; plannerUsage?: TokenUsageSummary; workerUsage?: TokenUsageSummary }) => {
+  const animatedUsage = useAnimatedTokenUsage(usage);
+  const brief = formatTokenUsageDirectional(animatedUsage);
+  const targetBrief = formatTokenUsageDirectional(usage);
+  const previousBriefRef = useRef(brief);
+  const [isAnimating, setIsAnimating] = useState(false);
+
+  useEffect(() => {
+    if (!targetBrief || previousBriefRef.current === targetBrief) return;
+    previousBriefRef.current = targetBrief;
+    setIsAnimating(false);
+    const frame = requestAnimationFrame(() => setIsAnimating(true));
+    const timer = window.setTimeout(() => setIsAnimating(false), 520);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [targetBrief]);
+
+  if (!tokenUsageHasValues(usage)) return null;
+
+  const title = [
+    formatTokenUsageDetail(usage),
+    tokenUsageHasValues(plannerUsage) ? `Planner: ${formatTokenUsageDetail(plannerUsage)}` : '',
+    tokenUsageHasValues(workerUsage) ? `Worker: ${formatTokenUsageDetail(workerUsage)}` : '',
+  ].filter(Boolean).join('\n');
+
+  return (
+    <span title={title} className={`token-usage-badge${isAnimating ? ' token-usage-badge-pulse' : ''}`}>
+      {animatedUsage.inputTokens == null && animatedUsage.outputTokens == null && animatedUsage.totalTokens != null && (
+        <span className="token-usage-value token-usage-total">{formatTokenCount(animatedUsage.totalTokens)} tok</span>
+      )}
+      {animatedUsage.inputTokens != null && (
+        <span className="token-usage-value token-usage-input">↑{formatTokenCount(animatedUsage.inputTokens)}</span>
+      )}
+      {animatedUsage.outputTokens != null && (
+        <span className="token-usage-value token-usage-output">↓{formatTokenCount(animatedUsage.outputTokens)}</span>
+      )}
+    </span>
+  );
+};
+
 const MODEL_WAIT_STATUS = 'Tool finished. Waiting for model to analyze results';
 
 const formatElapsed = (startedAt: number, now: number) => {
@@ -65,6 +116,12 @@ const getApiCallBreakdown = (msg: { apiCallCount?: number; plannerApiCallCount?:
     hasBreakdown,
   };
 };
+
+const getTokenUsageBreakdown = (msg: { tokenUsage?: TokenUsageSummary; plannerTokenUsage?: TokenUsageSummary; workerTokenUsage?: TokenUsageSummary }) => ({
+  total: msg.tokenUsage,
+  planner: msg.plannerTokenUsage,
+  worker: msg.workerTokenUsage,
+});
 
 const filterModelsForProvider = (providerConfig: ProviderConfig, models: string[]) => {
   if (providerConfig.provider === 'openai') return models;
@@ -456,7 +513,7 @@ function App() {
         }
         const targetMsg = { ...newMessages[targetIdx] };
         if (targetMsg.role !== 'ai') return prev;
-        if (targetMsg.isComplete) return prev;
+        if (targetMsg.isComplete && data.type !== 'token-usage') return prev;
         if (data.type === 'status') {
           targetMsg.statusLogs = [...targetMsg.statusLogs, data.data];
           targetMsg.modelWaitStartedAt = null;
@@ -484,6 +541,17 @@ function App() {
             targetMsg.plannerApiCallCount = (targetMsg.plannerApiCallCount || 0) + 1;
           } else if (data.data === 'worker') {
             targetMsg.workerApiCallCount = (targetMsg.workerApiCallCount || 0) + 1;
+          }
+        } else if (data.type === 'token-usage') {
+          const usage = data.data?.usage;
+          const source = data.data?.source;
+          if (tokenUsageHasValues(usage)) {
+            targetMsg.tokenUsage = addTokenUsage(targetMsg.tokenUsage, usage);
+            if (source === 'worker') {
+              targetMsg.workerTokenUsage = addTokenUsage(targetMsg.workerTokenUsage, usage);
+            } else {
+              targetMsg.plannerTokenUsage = addTokenUsage(targetMsg.plannerTokenUsage, usage);
+            }
           }
         } else if (data.type === 'agent-step') {
           targetMsg.modelWaitStartedAt = null;
@@ -1098,10 +1166,16 @@ function App() {
                 {msg.role === 'ai' && (
                   <div className="message-header" style={{display: 'flex', justifyContent: 'space-between'}}>
                     <span>Dual-Engine Agent</span>
-                    {msg.apiCallCount > 0 && (() => {
-                      const calls = getApiCallBreakdown(msg);
-                      return <ApiCallsBadge count={calls.total} plannerCount={calls.planner} workerCount={calls.worker} showBreakdown={calls.hasBreakdown} />;
-                    })()}
+                    <span style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      {msg.apiCallCount > 0 && (() => {
+                        const calls = getApiCallBreakdown(msg);
+                        return <ApiCallsBadge count={calls.total} plannerCount={calls.planner} workerCount={calls.worker} showBreakdown={calls.hasBreakdown} />;
+                      })()}
+                      {(() => {
+                        const tokens = getTokenUsageBreakdown(msg);
+                        return <TokenUsageBadge usage={tokens.total} plannerUsage={tokens.planner} workerUsage={tokens.worker} />;
+                      })()}
+                    </span>
                   </div>
                 )}
 
@@ -1237,11 +1311,15 @@ function App() {
                   </div>
                 )}
 
-                {msg.role === 'ai' && msg.apiCallCount > 0 && messageExceedsViewport[msg.id] && (
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px' }}>
+                {msg.role === 'ai' && messageExceedsViewport[msg.id] && (msg.apiCallCount > 0 || tokenUsageHasValues(msg.tokenUsage)) && (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px', gap: '6px', flexWrap: 'wrap' }}>
                     {(() => {
                       const calls = getApiCallBreakdown(msg);
-                      return <ApiCallsBadge count={calls.total} plannerCount={calls.planner} workerCount={calls.worker} showBreakdown={calls.hasBreakdown} />;
+                      return msg.apiCallCount > 0 ? <ApiCallsBadge count={calls.total} plannerCount={calls.planner} workerCount={calls.worker} showBreakdown={calls.hasBreakdown} /> : null;
+                    })()}
+                    {(() => {
+                      const tokens = getTokenUsageBreakdown(msg);
+                      return <TokenUsageBadge usage={tokens.total} plannerUsage={tokens.planner} workerUsage={tokens.worker} />;
                     })()}
                   </div>
                 )}

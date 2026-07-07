@@ -319,10 +319,9 @@ const responsesEventsToChatCompletion = (model: string, events: Array<{ type: st
 
   if (orderedCalls.length > 0) finishReason = 'tool_calls';
 
-  const promptTokens = usage?.input_tokens || 0;
-  const completionTokens = usage?.output_tokens || 0;
-
-  return {
+  const promptTokens = usage?.input_tokens;
+  const completionTokens = usage?.output_tokens;
+  const response: JsonRecord = {
     id: responseId || `chatcmpl-${shortId()}`,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
@@ -336,12 +335,17 @@ const responsesEventsToChatCompletion = (model: string, events: Array<{ type: st
       },
       finish_reason: finishReason,
     }],
-    usage: {
+  };
+
+  if (usage) {
+    response.usage = {
       prompt_tokens: promptTokens,
       completion_tokens: completionTokens,
-      total_tokens: usage?.total_tokens || promptTokens + completionTokens,
-    },
-  };
+      total_tokens: usage.total_tokens ?? ((promptTokens ?? 0) + (completionTokens ?? 0)),
+    };
+  }
+
+  return response;
 };
 
 const passthrough = async (

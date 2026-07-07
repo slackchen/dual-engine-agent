@@ -3,6 +3,7 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { traceEvent } from './debugTrace';
+import { normalizeTokenUsage, type TokenUsageSummary } from '../src/shared/tokenUsage';
 
 export interface PlanOption {
   id: string;
@@ -50,6 +51,7 @@ interface PlanSessionTraceContext {
   protocol: string;
   modelName: string;
   baseUrl: string;
+  onTokenUsage?: (usage: TokenUsageSummary, metadata: Record<string, unknown>) => void;
 }
 
 const emptyPlan = (): PlanDraft => ({
@@ -172,6 +174,7 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
 
       const startedAt = Date.now();
       let text = '';
+      let usage: TokenUsageSummary = {};
       try {
         const result = await generateText({
           model,
@@ -180,6 +183,12 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
           messages: retryMessages,
         });
         text = result.text;
+        usage = normalizeTokenUsage(result.usage);
+        traceContext?.onTokenUsage?.(usage, {
+          attempt,
+          modelName: traceContext.modelName,
+          protocol: traceContext.protocol,
+        });
       } catch (error) {
         traceEvent({
           runId: traceContext?.runId,
@@ -204,6 +213,7 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
           attempt,
           durationMs: Date.now() - startedAt,
           text,
+          usage,
         },
       });
 
@@ -248,7 +258,7 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
       userReply?: string;
     },
     abortSignal?: AbortSignal,
-    trace?: { runId?: string }
+    trace?: { runId?: string; onTokenUsage?: PlanSessionTraceContext['onTokenUsage'] }
   ): Promise<PlanSessionState> {
     const model = this.createModel(protocol, authMethod, tokenOrKey, modelName, baseUrl);
     const systemPrompt = `You are the Plan Mode facilitator for a Dual-Engine Agent desktop app.
@@ -320,7 +330,7 @@ Return ONLY this JSON schema:
         },
       ],
       abortSignal,
-      { runId: trace?.runId, protocol, modelName, baseUrl }
+      { runId: trace?.runId, protocol, modelName, baseUrl, onTokenUsage: trace?.onTokenUsage }
     );
 
     const status = result.status === 'final' ? 'final' : 'needs_input';

@@ -9,6 +9,7 @@ import { createBrowserTools } from './tools/browser';
 import { createAppTools } from './tools/app';
 import type { RequiredTool } from './planner';
 import { traceEvent } from './debugTrace';
+import { normalizeTokenUsage, type TokenUsageSummary } from '../src/shared/tokenUsage';
 
 const HARD_STEP_LIMIT = 100;
 const MIN_TOOL_STEP_LIMIT = 6;
@@ -49,6 +50,7 @@ export class WorkerEngine {
     maxSteps: number,
     requiredTool?: RequiredTool,
     abortSignal?: AbortSignal,
+    onTokenUsage?: (usage: TokenUsageSummary, metadata: Record<string, unknown>) => void,
     trace?: WorkerTraceContext
   ): Promise<string> {
     if (!workspacePath) {
@@ -170,7 +172,7 @@ APP TOOL ARGUMENTS:
       });
 
       const startedAt = Date.now();
-      const { text } = await generateText({
+      const result = await generateText({
         model,
         abortSignal,
         prepareStep: ({ stepNumber }) => (
@@ -222,19 +224,22 @@ APP TOOL ARGUMENTS:
           
           return false;
         },
-        onStepFinish: ({ text, toolCalls, toolResults }) => {
+        onStepFinish: (step: any) => {
+          const { text, toolCalls, toolResults } = step;
+          const stepUsage = normalizeTokenUsage(step.usage);
           // Parse structured step data
           // AI SDK v7: toolCall fields use `.input`, toolResult fields use `.output`
           const stepData = {
              thought: text || '',
-             actions: toolCalls ? toolCalls.map(c => {
+             usage: stepUsage,
+             actions: toolCalls ? toolCalls.map((c: any) => {
                const cAny = c as any;
                return {
                  toolName: c.toolName,
                  args: cAny.input ?? cAny.args ?? {}
                };
              }) : [],
-             results: toolResults ? toolResults.map(r => {
+             results: toolResults ? toolResults.map((r: any) => {
                const rAny = r as any;
                // AI SDK v7 uses `.output`; older versions used `.result`
                const resObj = rAny.output ?? rAny.result;
@@ -281,6 +286,15 @@ APP TOOL ARGUMENTS:
         messages: modelMessages,
         tools
       });
+      const text = result.text;
+      const usage = normalizeTokenUsage(result.usage);
+      onTokenUsage?.(usage, {
+        workerInstance: trace?.workerInstance,
+        workerTaskId: trace?.workerTaskId,
+        modelName,
+        protocol,
+        requiredTool: requiredTool || trace?.requiredTool,
+      });
       traceEvent({
         runId: trace?.runId,
         source: 'worker',
@@ -292,6 +306,7 @@ APP TOOL ARGUMENTS:
           durationMs: Date.now() - startedAt,
           text,
           stopReason,
+          usage,
         },
       });
       // Return only the final text, the UI handles intermediate steps via onStep callback

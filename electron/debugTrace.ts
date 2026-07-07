@@ -13,6 +13,7 @@ export type DebugTracePhase =
   | 'request'
   | 'response'
   | 'step'
+  | 'usage'
   | 'status'
   | 'error'
   | 'lifecycle';
