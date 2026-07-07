@@ -50,16 +50,17 @@ export function createWindow(
   }
 
   win.webContents.on('before-input-event', (_event, input) => {
-    if (
-      input.type === 'keyDown'
-      && input.control
-      && input.shift
-      && input.alt
-      && input.key.toLowerCase() === 'd'
-    ) {
-      _event.preventDefault();
-      openDebugTraceWindow({ __dirname, VITE_DEV_SERVER_URL, RENDERER_DIST, VITE_PUBLIC });
-      return;
+    if (input.type === 'keyDown') {
+      const isMac = process.platform === 'darwin';
+      const isTriggered = isMac
+        ? (input.meta && input.shift && input.key.toLowerCase() === 'd')
+        : (input.control && input.shift && input.alt && input.key.toLowerCase() === 'd');
+        
+      if (isTriggered) {
+        _event.preventDefault();
+        openDebugTraceWindow({ __dirname, VITE_DEV_SERVER_URL, RENDERER_DIST, VITE_PUBLIC });
+        return;
+      }
     }
 
     if (input.key === 'F12' && input.type === 'keyDown') {
