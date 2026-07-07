@@ -5,6 +5,47 @@ export interface FileNode {
   children?: FileNode[];
 }
 
+export interface PlanOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface PlanQuestion {
+  id: string;
+  question: string;
+  options: PlanOption[];
+  allowCustom: boolean;
+}
+
+export interface PlanStep {
+  id: string;
+  title: string;
+  description: string;
+  expectedOutcome: string;
+}
+
+export interface PlanDraft {
+  title: string;
+  summary: string;
+  steps: PlanStep[];
+  assumptions: string[];
+  risks: string[];
+}
+
+export interface PlanSessionTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface PlanSessionState {
+  status: 'needs_input' | 'final';
+  assistantMessage: string;
+  questions: PlanQuestion[];
+  draftPlan: PlanDraft | null;
+  finalPlan: PlanDraft | null;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'ai';
@@ -18,6 +59,10 @@ export interface Message {
   plan?: any;
   finalSummary?: string;
   modelWaitStartedAt?: number | null;
+  planModeRequest?: string;
+  planSession?: PlanSessionState;
+  planSessionHistory?: PlanSessionTurn[];
+  planExecutionStarted?: boolean;
 }
 
 export interface Conversation {

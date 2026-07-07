@@ -2,6 +2,7 @@ import { generateText } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createAnthropic } from '@ai-sdk/anthropic';
+import { traceEvent } from './debugTrace';
 
 export type RequiredTool =
   | 'readFile'
@@ -51,6 +52,13 @@ export interface PlannerPlanResult {
     expected_output: string;
   }>;
   decision: PlannerDecision;
+}
+
+interface PlannerTraceContext {
+  runId?: string;
+  protocol: string;
+  modelName: string;
+  baseUrl: string;
 }
 
 export class PlannerEngine {
@@ -112,7 +120,8 @@ export class PlannerEngine {
     model: any,
     systemPrompt: string,
     messages: any[],
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    traceContext?: PlannerTraceContext
   ) {
     const MAX_RETRIES = 3;
     let retryMessages = messages;
@@ -126,11 +135,59 @@ export class PlannerEngine {
 IMPORTANT CORRECTION (Attempt ${attempt}/${MAX_RETRIES}): Your previous response was not valid JSON.
 Output ONLY a raw JSON object. Start with { and end with }. No markdown, headings, or extra text.`;
 
-      const { text } = await generateText({
-        model,
-        abortSignal,
-        system,
-        messages: retryMessages
+      traceEvent({
+        runId: traceContext?.runId,
+        source: 'planner',
+        phase: 'request',
+        title: `${label} request`,
+        data: {
+          label,
+          attempt,
+          protocol: traceContext?.protocol,
+          modelName: traceContext?.modelName,
+          baseUrl: traceContext?.baseUrl,
+          system,
+          messages: retryMessages,
+        },
+      });
+
+      const startedAt = Date.now();
+      let text = '';
+      try {
+        const result = await generateText({
+          model,
+          abortSignal,
+          system,
+          messages: retryMessages
+        });
+        text = result.text;
+      } catch (error) {
+        traceEvent({
+          runId: traceContext?.runId,
+          source: 'planner',
+          phase: 'error',
+          title: `${label} request failed`,
+          data: {
+            label,
+            attempt,
+            durationMs: Date.now() - startedAt,
+            error,
+          },
+        });
+        throw error;
+      }
+
+      traceEvent({
+        runId: traceContext?.runId,
+        source: 'planner',
+        phase: 'response',
+        title: `${label} response`,
+        data: {
+          label,
+          attempt,
+          durationMs: Date.now() - startedAt,
+          text,
+        },
       });
 
       const cleanJson = this.extractJson(text);
@@ -138,6 +195,18 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
         return JSON.parse(cleanJson);
       } catch {
         lastError = new Error(`${label}: attempt ${attempt} returned invalid JSON. Snippet: ${cleanJson.substring(0, 200)}`);
+        traceEvent({
+          runId: traceContext?.runId,
+          source: 'planner',
+          phase: 'error',
+          title: `${label} JSON parse failed`,
+          data: {
+            label,
+            attempt,
+            cleanJson,
+            error: lastError,
+          },
+        });
         console.warn(`[Planner] ${lastError.message}`);
         retryMessages = [
           ...messages,
@@ -161,7 +230,8 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
     context: {
       workspacePath: string;
     },
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    trace?: { runId?: string }
   ): Promise<PlannerPlanResult> {
     const model = this.createModel(protocol, authMethod, tokenOrKey, modelName, baseUrl);
     const systemPrompt = `You are the Planner Controller for a Dual-Engine Agent desktop application.
@@ -193,7 +263,9 @@ Completion rules:
 - For every execute or execute_batch decision, include completionCriteria. This is the user-level condition that would make the overall request complete after the Worker observations return.
 - The executor does not judge completionCriteria. It only executes Worker tasks and returns observations. You will review those observations and decide complete, blocked, or the next execute decision.
 - Native apps, compiled executables, and C++/SFML games must be launched with launchApp.
-- Web pages and HTML games must be opened with openBrowser.
+- Use openBrowser only when the user explicitly asks to open, preview, browse, view a web page, run an HTML/web target, or names a URL/index.html as the thing to open.
+- For game development, completion, implementation, or fix requests, do not choose openBrowser as the first action. Read, edit, build, or validate the game first.
+- If the user asks to develop and preview a web/HTML game, schedule openBrowser only as a final verification step after implementation or validation observations exist.
 - runCommand is for short commands only; it must not run long-lived GUI games.
 
 Return ONLY this JSON schema:
@@ -261,7 +333,8 @@ Return ONLY this JSON schema:
           })
         }
       ],
-      abortSignal
+      abortSignal,
+      { runId: trace?.runId, protocol, modelName, baseUrl }
     );
 
     return {
@@ -285,7 +358,8 @@ Return ONLY this JSON schema:
       observations: any[];
       decisionIndex: number;
     },
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    trace?: { runId?: string }
   ): Promise<PlannerDecision> {
     const model = this.createModel(protocol, authMethod, tokenOrKey, modelName, baseUrl);
     const systemPrompt = `You are the Planner Controller for a Dual-Engine Agent.
@@ -316,9 +390,10 @@ Decision rules:
 - In execute_batch, each task must still be one concrete single-tool task with requiredTool.
 - Mark canRunInParallel true only when the task has no dependency on sibling task results.
 - Mark writesFiles true for createFile, writeFile, editFileContent, or any runCommand that may modify files.
-- For "open/run/launch/preview" requests, do not complete after only checking files or processes. Complete only after a successful launchApp for native executables/games or successful openBrowser for web pages.
+- For explicit "open/run/launch/preview" requests, do not complete after only checking files or processes. Complete only after a successful launchApp for native executables/games or successful openBrowser for web pages.
 - For native C++/SFML games, inspect/build with runCommand if needed, then launch with launchApp.
-- For web fallback, explicitly decide openBrowser.
+- Use openBrowser only when the user explicitly asks to open, preview, browse, view a web page, run an HTML/web target, or names a URL/index.html as the thing to open.
+- For game development, completion, implementation, or fix requests, do not choose openBrowser before the game has been implemented or validated. If a prior observation says openBrowser was blocked by tool policy, choose a development or validation task instead of repeating openBrowser.
 - Do not ask Worker to choose fallback policy. You choose fallback based on observations.
 
 Return ONLY this JSON schema:
@@ -379,7 +454,116 @@ Return ONLY this JSON schema:
           })
         }
       ],
-      abortSignal
+      abortSignal,
+      { runId: trace?.runId, protocol, modelName, baseUrl }
+    );
+
+    return decision as PlannerDecision;
+  }
+
+  public async decideFromApprovedPlan(
+    protocol: string,
+    authMethod: string,
+    tokenOrKey: string,
+    modelName: string,
+    userRequest: string,
+    baseUrl: string,
+    chatHistory: any[],
+    context: {
+      workspacePath: string;
+      approvedPlan: any;
+    },
+    abortSignal?: AbortSignal,
+    trace?: { runId?: string }
+  ): Promise<PlannerDecision> {
+    const model = this.createModel(protocol, authMethod, tokenOrKey, modelName, baseUrl);
+    const systemPrompt = `You are the Planner Controller for a Dual-Engine Agent desktop application.
+
+The user has already approved a high-level plan in Plan Mode. Your job is to convert that approved plan into the first concrete execution decision for Worker model(s).
+Do not ask questions. Do not claim that files were read, commands ran, code changed, a browser opened, or an app launched.
+
+Worker capabilities:
+- readFile: read a workspace file.
+- createFile/writeFile/editFileContent: create or modify files.
+- runCommand: short-lived shell commands, builds, checks, diagnostics. Non-zero exit codes are observations, not necessarily fatal.
+- openBrowser: open HTML files, localhost, or URLs.
+- launchApp: launch native GUI apps, compiled executables, and C++ games without waiting for exit.
+
+Decision rules:
+- Return "execute" when one concrete Worker action is required.
+- Return "execute_batch" when multiple known actions can be planned now.
+- Prefer "execute_batch" for all currently known next actions. Sequential tasks may be returned together with canRunInParallel false and dependencies.
+- Each Worker task must be one concrete single-tool action and must include requiredTool.
+- Set workerCount to the number of Worker instances you want; runtime may clamp or serialize based on safety.
+- Mark canRunInParallel true only when the task has no dependency on sibling task results.
+- Mark writesFiles true for createFile, writeFile, editFileContent, or any runCommand that may modify files.
+- Return "complete" only for pure conversation/information plans that need no tools. Use completionEvidence.source = "conversation_only".
+- For requests that require opening/running/previewing/building/testing/reading/editing files, return execute or execute_batch.
+- Native apps, compiled executables, and C++/SFML games must be launched with launchApp.
+- Use openBrowser only when the user explicitly asks to open, preview, browse, view a web page, run an HTML/web target, or names a URL/index.html as the thing to open.
+- For game development, completion, implementation, or fix requests, do not choose openBrowser as the first action. Read, edit, build, or validate the game first.
+- If the user asks to develop and preview a web/HTML game, schedule openBrowser only as a final verification step after implementation or validation observations exist.
+- runCommand is for short commands only; it must not run long-lived GUI games.
+- For every execute or execute_batch decision, include completionCriteria.
+
+Return ONLY this JSON schema:
+{
+  "type": "execute | execute_batch | complete | blocked",
+  "summary": "What you decided and why",
+  "task": {
+    "id": "short-id",
+    "description": "Concrete Worker instruction for one step",
+    "requiredTool": "readFile | createFile | writeFile | editFileContent | runCommand | openBrowser | launchApp",
+    "successCriteria": "How to judge this step from the tool result",
+    "failurePolicy": "Return the exact observation to Planner; do not choose fallback",
+    "canRunInParallel": false,
+    "writesFiles": false,
+    "dependencies": []
+  },
+  "tasks": [
+    {
+      "id": "short-id",
+      "description": "Concrete Worker instruction for one step",
+      "requiredTool": "readFile | createFile | writeFile | editFileContent | runCommand | openBrowser | launchApp",
+      "successCriteria": "How to judge this step from the tool result",
+      "failurePolicy": "Return the exact observation to Planner; do not choose fallback",
+      "canRunInParallel": true,
+      "writesFiles": false,
+      "dependencies": []
+    }
+  ],
+  "workerCount": 2,
+  "completionCriteria": {
+    "goal": "User-level outcome this execution is trying to satisfy",
+    "satisfiedWhen": "Condition the Planner will check against Worker observations",
+    "requiredEvidence": ["Concrete evidence fields or facts needed from Worker observations"]
+  },
+  "completionEvidence": {
+    "source": "conversation_only | tool_observation",
+    "observationIndexes": [],
+    "notes": "Why this proves completion"
+  },
+  "finalResponse": "For complete or blocked decisions, user-facing response",
+  "reason": "For blocked decisions"
+}`;
+
+    const decision = await this.generateJson(
+      'Approved plan decision',
+      model,
+      systemPrompt,
+      [
+        ...chatHistory,
+        {
+          role: 'user',
+          content: JSON.stringify({
+            userRequest,
+            workspacePath: context.workspacePath,
+            approvedPlan: context.approvedPlan,
+          })
+        }
+      ],
+      abortSignal,
+      { runId: trace?.runId, protocol, modelName, baseUrl }
     );
 
     return decision as PlannerDecision;

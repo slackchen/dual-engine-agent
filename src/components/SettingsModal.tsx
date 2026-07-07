@@ -32,6 +32,7 @@ interface SettingsModalProps {
   maxSteps: number;
   showHiddenFiles: boolean;
   handleOAuthLogin: () => Promise<string | null>;
+  onOpenDebugTrace?: () => void;
 }
 
 const PROVIDER_OPTIONS: Provider[] = ['openai', 'sensenova', 'anthropic', 'google'];
@@ -99,6 +100,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   maxSteps,
   showHiddenFiles,
   handleOAuthLogin,
+  onOpenDebugTrace,
 }) => {
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
@@ -109,6 +111,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isPlannerModelSelectOpen, setIsPlannerModelSelectOpen] = useState(false);
   const [isWorkerModelSelectOpen, setIsWorkerModelSelectOpen] = useState(false);
   const [draft, setDraft] = useState<AppSettingsValues | null>(null);
+  const debugClickCountRef = useRef(0);
+  const [showDebugTraceEntry, setShowDebugTraceEntry] = useState(false);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -286,6 +290,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     updateSelected({ modelConverterOverrides: next });
   };
 
+  const handleVersionClick = () => {
+    debugClickCountRef.current += 1;
+    if (debugClickCountRef.current >= 7) setShowDebugTraceEntry(true);
+  };
+
   const inputStyle: React.CSSProperties = {
     width: '100%',
     padding: '6px',
@@ -345,6 +354,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             onClick={() => setActiveTab('general')}
             style={{ background: activeTab === 'general' ? 'var(--bg-secondary)' : 'transparent', color: 'var(--text-primary)', border: 'none', padding: '10px 20px', textAlign: 'left', cursor: 'pointer', borderLeft: activeTab === 'general' ? '3px solid var(--accent)' : '3px solid transparent' }}
           >General</button>
+          <div style={{ marginTop: 'auto', padding: '0 20px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {showDebugTraceEntry && (
+              <button
+                onClick={onOpenDebugTrace}
+                style={{ ...buttonStyle, width: '100%', textAlign: 'left', opacity: 0.85 }}
+              >
+                Trace
+              </button>
+            )}
+            <button
+              onClick={handleVersionClick}
+              style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', opacity: 0.45, fontSize: '11px', textAlign: 'left', padding: 0, cursor: 'default' }}
+              title={showDebugTraceEntry ? 'Debug Trace enabled' : undefined}
+            >
+              v0.0.0
+            </button>
+          </div>
         </div>
 
         <div style={{ flex: 1, padding: '20px', display: 'flex', flexDirection: 'column', minWidth: 0 }}>

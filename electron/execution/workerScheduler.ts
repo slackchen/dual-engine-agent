@@ -1,6 +1,8 @@
 import { WorkerEngine } from '../worker';
 import type { PlannerDecision, PlannerTask, RequiredTool } from '../planner';
 import { normalizeRequiredTool, VALID_REQUIRED_TOOLS } from './decisionUtils';
+import { evaluatePlannerToolPolicy } from './toolPolicy';
+import { traceEvent } from '../debugTrace';
 
 const MAX_PARALLEL_WORKERS = 3;
 
@@ -12,9 +14,11 @@ interface WorkerRuntimeConfig {
 }
 
 interface ExecutePlannerDecisionArgs {
+  runId?: string;
   decision: PlannerDecision;
   workerRuntime: WorkerRuntimeConfig;
   workerModel: string;
+  userRequest: string;
   workspacePath: string;
   chatHistory: any[];
   maxSteps: number;
@@ -151,6 +155,46 @@ async function executeOneTask(
     return invalidTaskObservation(args.decision, runnable.task, 'Task stopped by user before Worker execution.');
   }
 
+  const policy = evaluatePlannerToolPolicy({
+    userRequest: args.userRequest,
+    task: runnable.task,
+    requiredTool: runnable.requiredTool,
+    previousObservations: observationsSnapshot,
+  });
+  if (!policy.allowed) {
+    const message = policy.reason || `Tool policy blocked ${runnable.requiredTool}.`;
+    traceEvent({
+      runId: args.runId,
+      source: 'controller',
+      phase: 'status',
+      title: 'Worker tool policy blocked task',
+      data: {
+        workerInstance: runnable.workerLabel,
+        task: runnable.task,
+        requiredTool: runnable.requiredTool,
+        reason: message,
+      },
+    });
+    args.onStatus(message);
+    args.onTaskResult(message);
+    return {
+      plannerDecision: {
+        type: args.decision.type,
+        summary: args.decision.summary,
+        task: runnable.task,
+        workerCount: args.decision.workerCount,
+        completionCriteria: args.decision.completionCriteria,
+      },
+      completionCriteria: args.decision.completionCriteria,
+      workerResult: message,
+      workerInstance: runnable.workerLabel,
+      policyBlocked: true,
+      blockedTool: runnable.requiredTool,
+      error: message,
+      steps: [],
+    };
+  }
+
   const stepDataForObservation: any[] = [];
   const taskWorker = new WorkerEngine();
   const result = await taskWorker.executeTask(
@@ -188,7 +232,13 @@ async function executeOneTask(
     args.chatHistory || [],
     args.maxSteps || 20,
     runnable.requiredTool,
-    args.abortSignal
+    args.abortSignal,
+    {
+      runId: args.runId,
+      workerInstance: runnable.workerLabel,
+      workerTaskId: runnable.task.id,
+      requiredTool: runnable.requiredTool,
+    }
   );
 
   if (args.abortSignal?.aborted) {
@@ -214,6 +264,19 @@ async function executeOneTask(
 }
 
 export async function executePlannerDecision(args: ExecutePlannerDecisionArgs) {
+  traceEvent({
+    runId: args.runId,
+    source: 'controller',
+    phase: 'status',
+    title: 'Executing Planner decision',
+    data: {
+      decision: args.decision,
+      workerModel: args.workerModel,
+      workerRuntime: args.workerRuntime,
+      maxSteps: args.maxSteps,
+    },
+  });
+
   if (args.abortSignal?.aborted) {
     return {
       observations: [

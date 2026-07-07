@@ -13,7 +13,10 @@ import { HistoryModal } from './components/HistoryModal';
 import { SettingsModal, type SettingsTab } from './components/SettingsModal';
 import { AgentStepView } from './components/AgentStepView';
 import { ChatInputBox } from './components/ChatInputBox';
+import { PlanModeView } from './components/PlanModeView';
 import { applyConverterPlugin, NO_CONVERTER_PLUGIN_ID } from './converterPlugins';
+import { buildChatHistory, formatPlanSessionForHistory } from './chatHistory';
+import type { Message, PlanDraft, PlanSessionState, PlanSessionTurn } from './types';
 
 
 
@@ -85,6 +88,7 @@ interface SettingsHostProps {
   maxSteps: number;
   showHiddenFiles: boolean;
   handleOAuthLogin: () => Promise<string | null>;
+  onOpenDebugTrace?: () => void;
 }
 
 const SettingsHost = ({
@@ -102,6 +106,7 @@ const SettingsHost = ({
   maxSteps,
   showHiddenFiles,
   handleOAuthLogin,
+  onOpenDebugTrace,
 }: SettingsHostProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>('auth');
@@ -128,6 +133,7 @@ const SettingsHost = ({
           maxSteps={maxSteps}
           showHiddenFiles={showHiddenFiles}
           handleOAuthLogin={handleOAuthLogin}
+          onOpenDebugTrace={onOpenDebugTrace}
         />
       )}
     </>
@@ -154,6 +160,9 @@ function App() {
     isGlobalLoaded,
     saveWorkspacePath,
   } = config;
+  const handleOpenDebugTrace = useCallback(() => {
+    window.ipcRenderer?.invoke('debug-trace:open-window').catch(console.error);
+  }, []);
 
   const getProviderRuntime = useCallback((providerConfig: ProviderConfig, modelName = '') => {
     let tokenOrKey = providerConfig.apiKey;
@@ -272,6 +281,7 @@ function App() {
     handleChatScroll,
     scrollToBottom,
     resetScrollPosition,
+    markUserScrollIntent,
     userScrolledUp,
   } = scroll;
 
@@ -307,17 +317,21 @@ function App() {
 
   useEffect(() => {
     const frame = requestAnimationFrame(measureMessageHeights);
-    const resizeObserver = new ResizeObserver(measureMessageHeights);
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(measureMessageHeights)
+      : null;
 
-    if (chatContainerRef.current) {
+    if (chatContainerRef.current && resizeObserver) {
       resizeObserver.observe(chatContainerRef.current);
     }
-    messageItemRefs.current.forEach(element => resizeObserver.observe(element));
+    if (resizeObserver) {
+      messageItemRefs.current.forEach(element => resizeObserver.observe(element));
+    }
     window.addEventListener('resize', measureMessageHeights);
 
     return () => {
       cancelAnimationFrame(frame);
-      resizeObserver.disconnect();
+      resizeObserver?.disconnect();
       window.removeEventListener('resize', measureMessageHeights);
     };
   }, [messages, measureMessageHeights, chatContainerRef]);
@@ -574,13 +588,21 @@ function App() {
   };
 
   // ─── Send message ─────────────────────────────────────────────────
-  const handleSend = async (userTask: string) => {
-    if (!userTask.trim()) return;
-    if (runningRunIdsRef.current.size > 0 || hasIncompleteAiMessage) return;
+  const handleSend = async (
+    userTask: string,
+    options: {
+      approvedPlan?: PlanDraft;
+      appendUserMessage?: boolean;
+      initialStatus?: string;
+      onStarted?: () => void;
+    } = {}
+  ) => {
+    if (!userTask.trim()) return false;
+    if (runningRunIdsRef.current.size > 0 || hasIncompleteAiMessage) return false;
     const plannerRuntime = getProviderRuntime(plannerProviderConfig, plannerModel);
     const workerRuntime = getProviderRuntime(workerProviderConfig, workerModel);
-    if (!plannerRuntime.tokenOrKey) { alert(`Please configure credentials for ${plannerProviderConfig.name} first!`); return; }
-    if (!workerRuntime.tokenOrKey) { alert(`Please configure credentials for ${workerProviderConfig.name} first!`); return; }
+    if (!plannerRuntime.tokenOrKey) { alert(`Please configure credentials for ${plannerProviderConfig.name} first!`); return false; }
+    if (!workerRuntime.tokenOrKey) { alert(`Please configure credentials for ${workerProviderConfig.name} first!`); return false; }
 
     const newAiMsgId = crypto.randomUUID();
     activeRunIdRef.current = newAiMsgId;
@@ -588,26 +610,15 @@ function App() {
     resetScrollPosition();
     terminalUserScrolledUp.current = false;
     scrollTerminalToBottom();
+    options.onStarted?.();
+    const appendUserMessage = options.appendUserMessage !== false;
     setMessages(prev => [
       ...prev,
-      { id: crypto.randomUUID(), role: 'user', content: userTask, statusLogs: [], agentSteps: [], apiCallCount: 0, plannerApiCallCount: 0, workerApiCallCount: 0, isComplete: true },
-      { id: newAiMsgId, role: 'ai', content: '', statusLogs: ['Initializing Agent...'], agentSteps: [], apiCallCount: 0, plannerApiCallCount: 0, workerApiCallCount: 0, isComplete: false }
+      ...(appendUserMessage ? [{ id: crypto.randomUUID(), role: 'user' as const, content: userTask, statusLogs: [], agentSteps: [], apiCallCount: 0, plannerApiCallCount: 0, workerApiCallCount: 0, isComplete: true }] : []),
+      { id: newAiMsgId, role: 'ai', content: '', statusLogs: [options.initialStatus || 'Initializing Agent...'], agentSteps: [], apiCallCount: 0, plannerApiCallCount: 0, workerApiCallCount: 0, isComplete: false }
     ]);
 
-    const chatHistory = messages
-      .filter(m => m.id !== 'init')
-      .map(m => {
-        let textContent = m.content || '';
-        if (m.role === 'ai' && m.finalSummary) {
-          textContent = `${textContent}\n\nFinal Summary:\n${m.finalSummary}`.trim();
-        }
-        if (m.role === 'ai' && !textContent && m.agentSteps?.length > 0) {
-          const toolsUsed = m.agentSteps.flatMap(s => (s.actions || []).map((a: any) => a.toolName)).filter(Boolean);
-          if (toolsUsed.length > 0) textContent = `[Executed tools: ${toolsUsed.join(', ')}]`;
-        }
-        return { role: m.role === 'user' ? 'user' : 'assistant', content: textContent };
-      })
-      .filter(m => !!m.content);
+    const chatHistory = buildChatHistory(messages);
 
     // @ts-ignore
     if (typeof window.ipcRenderer === 'undefined') {
@@ -620,7 +631,7 @@ function App() {
       });
       if (activeRunIdRef.current === newAiMsgId) activeRunIdRef.current = null;
       markRunInactive(newAiMsgId);
-      return;
+      return false;
     }
     try {
       // @ts-ignore
@@ -648,6 +659,7 @@ function App() {
         workspacePath,
         chatHistory,
         runId: newAiMsgId,
+        approvedPlan: options.approvedPlan,
       });
       setMessages(prev => {
         const n = [...prev];
@@ -657,7 +669,14 @@ function App() {
         if (target.isComplete) return prev;
         target.isComplete = true;
         target.modelWaitStartedAt = null;
-        if (typeof result === 'string' && result.startsWith('Error:')) target.content += `\n\n**[Error]**\n${result}`;
+        const returnedFinalResult = result && typeof result === 'object' && typeof result.finalResult === 'string'
+          ? result.finalResult
+          : '';
+        if (typeof result === 'string' && result.startsWith('Error:')) {
+          target.content += `\n\n**[Error]**\n${result}`;
+        } else if (returnedFinalResult && !target.finalSummary) {
+          target.finalSummary = returnedFinalResult;
+        }
         n[idx] = target;
         return n;
       });
@@ -680,6 +699,213 @@ function App() {
       }
       markRunInactive(newAiMsgId);
     }
+    return true;
+  };
+
+  const updateAiMessage = (messageId: string, updater: (message: Message) => Message) => {
+    setMessages(prev => {
+      const next = [...prev];
+      const idx = next.findIndex(message => message.id === messageId);
+      if (idx === -1) return prev;
+      const target = next[idx];
+      if (target.role !== 'ai') return prev;
+      next[idx] = updater(target);
+      return next;
+    });
+  };
+
+  const startPlanRun = (runId: string) => {
+    activeRunIdRef.current = runId;
+    markRunActive(runId);
+    resetScrollPosition();
+    terminalUserScrolledUp.current = false;
+    scrollTerminalToBottom();
+  };
+
+  const finishPlanRun = (runId: string) => {
+    if (activeRunIdRef.current === runId) {
+      activeRunIdRef.current = null;
+    }
+    markRunInactive(runId);
+  };
+
+  const createPlanAiMessage = (
+    id: string,
+    userRequest: string,
+    planHistory: PlanSessionTurn[],
+    status: string
+  ): Message => ({
+    id,
+    role: 'ai',
+    content: '',
+    statusLogs: [status],
+    agentSteps: [],
+    apiCallCount: 0,
+    plannerApiCallCount: 0,
+    workerApiCallCount: 0,
+    isComplete: false,
+    planModeRequest: userRequest,
+    planSessionHistory: planHistory,
+  });
+
+  const runPlanSessionStep = async (params: {
+    runId: string;
+    userRequest: string;
+    planHistory: PlanSessionTurn[];
+    userReply?: string;
+    chatHistory: ReturnType<typeof buildChatHistory>;
+  }) => {
+    const plannerRuntime = getProviderRuntime(plannerProviderConfig, plannerModel);
+    if (!plannerRuntime.tokenOrKey) {
+      alert(`Please configure credentials for ${plannerProviderConfig.name} first!`);
+      finishPlanRun(params.runId);
+      return;
+    }
+
+    if (typeof window.ipcRenderer === 'undefined') {
+      updateAiMessage(params.runId, message => {
+        if (message.isComplete) return message;
+        return {
+          ...message,
+          content: '[Error] ipcRenderer is not available.',
+          isComplete: true,
+          modelWaitStartedAt: null,
+        };
+      });
+      finishPlanRun(params.runId);
+      return;
+    }
+
+    try {
+      const result = await window.ipcRenderer.invoke('agent:plan-session-step', {
+        protocol: plannerRuntime.activeProtocol,
+        authMethod: plannerRuntime.authMethodForBackend,
+        tokenOrKey: plannerRuntime.tokenOrKey,
+        baseUrl: plannerRuntime.currentBaseUrl,
+        plannerConfig: {
+          protocol: plannerRuntime.activeProtocol,
+          authMethod: plannerRuntime.authMethodForBackend,
+          tokenOrKey: plannerRuntime.tokenOrKey,
+          baseUrl: plannerRuntime.currentBaseUrl,
+        },
+        plannerModel,
+        userRequest: params.userRequest,
+        workspacePath,
+        chatHistory: params.chatHistory,
+        planHistory: params.planHistory,
+        userReply: params.userReply,
+        runId: params.runId,
+      });
+
+      if (!result || typeof result !== 'object' || !('status' in result)) {
+        throw new Error(typeof result === 'string' ? result : 'Plan mode returned an invalid response.');
+      }
+
+      updateAiMessage(params.runId, message => {
+        if (message.isComplete) return message;
+        return {
+          ...message,
+          planSession: result as PlanSessionState,
+          planSessionHistory: params.planHistory,
+          isComplete: true,
+          statusLogs: [],
+          modelWaitStartedAt: null,
+        };
+      });
+    } catch (e: any) {
+      updateAiMessage(params.runId, message => {
+        if (message.isComplete) return message;
+        return {
+          ...message,
+          isComplete: true,
+          modelWaitStartedAt: null,
+          content: `${message.content}\n\n**[Plan Mode Error]**\n${e.message}`,
+        };
+      });
+    } finally {
+      finishPlanRun(params.runId);
+    }
+  };
+
+  const handlePlanSend = async (userTask: string) => {
+    const normalizedTask = userTask.trim();
+    if (!normalizedTask) return;
+    if (runningRunIdsRef.current.size > 0 || hasIncompleteAiMessage) return;
+
+    const plannerRuntime = getProviderRuntime(plannerProviderConfig, plannerModel);
+    if (!plannerRuntime.tokenOrKey) { alert(`Please configure credentials for ${plannerProviderConfig.name} first!`); return; }
+
+    const runId = crypto.randomUUID();
+    const planHistory: PlanSessionTurn[] = [{ role: 'user', content: normalizedTask }];
+    const chatHistory = buildChatHistory(messages);
+
+    startPlanRun(runId);
+    setMessages(prev => [
+      ...prev,
+      { id: crypto.randomUUID(), role: 'user', content: normalizedTask, statusLogs: [], agentSteps: [], apiCallCount: 0, plannerApiCallCount: 0, workerApiCallCount: 0, isComplete: true },
+      createPlanAiMessage(runId, normalizedTask, planHistory, 'Plan Mode: preparing plan...'),
+    ]);
+
+    await runPlanSessionStep({
+      runId,
+      userRequest: normalizedTask,
+      planHistory,
+      chatHistory,
+    });
+  };
+
+  const handlePlanAnswer = async (messageId: string, answer: string) => {
+    const sourceMessage = messages.find(message => message.id === messageId);
+    const sourceSession = sourceMessage?.planSession;
+    const userRequest = sourceMessage?.planModeRequest;
+    const normalizedAnswer = answer.trim();
+    if (!sourceMessage || !sourceSession || !userRequest || !normalizedAnswer) return;
+    if (runningRunIdsRef.current.size > 0 || hasIncompleteAiMessage) return;
+
+    const plannerRuntime = getProviderRuntime(plannerProviderConfig, plannerModel);
+    if (!plannerRuntime.tokenOrKey) { alert(`Please configure credentials for ${plannerProviderConfig.name} first!`); return; }
+
+    const runId = crypto.randomUUID();
+    const planHistory: PlanSessionTurn[] = [
+      ...(sourceMessage.planSessionHistory || []),
+      { role: 'assistant', content: formatPlanSessionForHistory(sourceSession) },
+      { role: 'user', content: normalizedAnswer },
+    ];
+    const chatHistory = buildChatHistory(messages);
+
+    startPlanRun(runId);
+    setMessages(prev => [
+      ...prev,
+      { id: crypto.randomUUID(), role: 'user', content: normalizedAnswer, statusLogs: [], agentSteps: [], apiCallCount: 0, plannerApiCallCount: 0, workerApiCallCount: 0, isComplete: true },
+      createPlanAiMessage(runId, userRequest, planHistory, 'Plan Mode: updating plan...'),
+    ]);
+
+    await runPlanSessionStep({
+      runId,
+      userRequest,
+      planHistory,
+      userReply: normalizedAnswer,
+      chatHistory,
+    });
+  };
+
+  const handleExecutePlan = async (messageId: string) => {
+    const sourceMessage = messages.find(message => message.id === messageId);
+    const approvedPlan = sourceMessage?.planSession?.finalPlan;
+    const userRequest = sourceMessage?.planModeRequest || approvedPlan?.title || '';
+    if (!sourceMessage || !approvedPlan || !userRequest) return false;
+
+    return await handleSend(userRequest, {
+      approvedPlan,
+      appendUserMessage: false,
+      initialStatus: 'Executing approved plan...',
+      onStarted: () => {
+        updateAiMessage(messageId, message => ({
+          ...message,
+          planExecutionStarted: true,
+        }));
+      },
+    });
   };
 
   const handleStop = () => {
@@ -742,6 +968,7 @@ function App() {
              maxSteps={maxSteps}
              showHiddenFiles={showHiddenFiles}
              handleOAuthLogin={handleOAuthLogin}
+             onOpenDebugTrace={handleOpenDebugTrace}
            >
              ⚙️ Settings
            </SettingsHost>
@@ -857,7 +1084,15 @@ function App() {
             <button onClick={handleNewChat} style={{ background: 'var(--accent)', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>➕ New Chat</button>
             <button onClick={() => setIsHistoryOpen(true)} style={{ background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border-color)', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>💬 History</button>
           </div>
-          <div className="chat-messages" ref={chatContainerRef} onScroll={handleChatScroll} style={{ position: 'relative' }}>
+          <div
+            className="chat-messages"
+            ref={chatContainerRef}
+            onScroll={handleChatScroll}
+            onWheel={markUserScrollIntent}
+            onPointerDown={markUserScrollIntent}
+            onTouchStart={markUserScrollIntent}
+            style={{ position: 'relative' }}
+          >
             {messages.map((msg) => (
               <div key={msg.id} ref={(element) => setMessageItemRef(msg.id, element)} className={`message ${msg.role}`}>
                 {msg.role === 'ai' && (
@@ -949,6 +1184,16 @@ function App() {
                   </div>
                 )}
 
+                {msg.planModeRequest && (
+                  <PlanModeView
+                    session={msg.planSession}
+                    isPending={!msg.isComplete}
+                    executionStarted={msg.planExecutionStarted}
+                    onAnswer={(answer) => handlePlanAnswer(msg.id, answer)}
+                    onExecute={() => handleExecutePlan(msg.id)}
+                  />
+                )}
+
                 {msg.agentSteps?.length > 0 && (() => {
                   const mergedSteps: any[] = [];
                   for (let i = 0; i < msg.agentSteps.length; i++) {
@@ -1012,6 +1257,7 @@ function App() {
           )}
           <ChatInputBox
             onSend={handleSend}
+            onPlanSend={handlePlanSend}
             isRunning={isRunning}
             handleStop={handleStop}
             messages={messages}
@@ -1051,6 +1297,7 @@ function App() {
           maxSteps={maxSteps}
           showHiddenFiles={showHiddenFiles}
           handleOAuthLogin={handleOAuthLogin}
+          onOpenDebugTrace={handleOpenDebugTrace}
         >
           Configure Settings
         </SettingsHost>

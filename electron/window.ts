@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
+import { openDebugTraceWindow } from './debugTraceWindow';
 
 export function createWindow(
   __dirname: string, 
@@ -49,6 +50,18 @@ export function createWindow(
   }
 
   win.webContents.on('before-input-event', (_event, input) => {
+    if (
+      input.type === 'keyDown'
+      && input.control
+      && input.shift
+      && input.alt
+      && input.key.toLowerCase() === 'd'
+    ) {
+      _event.preventDefault();
+      openDebugTraceWindow({ __dirname, VITE_DEV_SERVER_URL, RENDERER_DIST, VITE_PUBLIC });
+      return;
+    }
+
     if (input.key === 'F12' && input.type === 'keyDown') {
       win?.webContents.toggleDevTools();
     }

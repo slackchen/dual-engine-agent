@@ -3,7 +3,8 @@ import { Message } from '../types';
 import { PROVIDER_LABELS, type ProviderConfig } from '../hooks/useAppConfig';
 
 interface ChatInputBoxProps {
-  onSend: (userTask: string) => void;
+  onSend: (userTask: string) => void | Promise<boolean>;
+  onPlanSend: (userTask: string) => void;
   isRunning: boolean;
   handleStop: () => void;
   messages: Message[];
@@ -205,6 +206,7 @@ const ModelPicker = ({
 
 export const ChatInputBox = memo(({
   onSend,
+  onPlanSend,
   isRunning,
   handleStop,
   messages,
@@ -222,12 +224,24 @@ export const ChatInputBox = memo(({
 }: ChatInputBoxProps) => {
   const [chatInput, setChatInput] = useState('');
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const [inputMode, setInputMode] = useState<'chat' | 'plan'>('chat');
+
+  const submit = () => {
+    if (isRunning || !chatInput.trim()) return;
+    if (inputMode === 'plan') {
+      onPlanSend(chatInput);
+    } else {
+      onSend(chatInput);
+    }
+    setChatInput('');
+    setHistoryIndex(-1);
+  };
 
   return (
     <div className="chat-input" style={{ background: 'var(--bg-secondary)', padding: '10px' }}>
       <textarea 
         className="chat-input-textarea"
-        placeholder="Ask the Dual-Engine Agent to do something..." 
+        placeholder={inputMode === 'plan' ? 'Discuss a plan before execution...' : 'Ask the Dual-Engine Agent to do something...'}
         value={chatInput}
         onChange={e => {
           setChatInput(e.target.value);
@@ -237,9 +251,7 @@ export const ChatInputBox = memo(({
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
             if (!isRunning && chatInput.trim()) {
-              onSend(chatInput);
-              setChatInput('');
-              setHistoryIndex(-1);
+              submit();
             }
           } else if (e.key === 'ArrowUp') {
             const rawUserHistory = messages.filter(m => m.role === 'user').map(m => m.content);
@@ -268,7 +280,28 @@ export const ChatInputBox = memo(({
         style={{ width: '100%', boxSizing: 'border-box' }}
       />
       <div className="chat-input-toolbar">
-        <div className="models" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '8px', alignItems: 'center', flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'inline-flex', border: '1px solid var(--border-color)', borderRadius: '4px', overflow: 'hidden', flexShrink: 0 }}>
+            {(['chat', 'plan'] as const).map(mode => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setInputMode(mode)}
+                style={{
+                  padding: '4px 8px',
+                  background: inputMode === mode ? 'var(--accent)' : 'transparent',
+                  color: inputMode === mode ? '#fff' : 'var(--text-secondary)',
+                  border: 'none',
+                  borderRadius: 0,
+                  fontSize: '11px',
+                  cursor: 'pointer',
+                }}
+              >
+                {mode === 'chat' ? 'Chat' : 'Plan'}
+              </button>
+            ))}
+          </div>
+          <div className="models" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '8px', alignItems: 'center', flex: 1, minWidth: 0 }}>
           <ModelPicker
             label="Main"
             align="left"
@@ -291,6 +324,7 @@ export const ChatInputBox = memo(({
             modelsByConfigId={modelsByConfigId}
             loadingModelsByConfigId={loadingModelsByConfigId}
           />
+          </div>
         </div>
         {isRunning ? (
           <button
@@ -301,11 +335,7 @@ export const ChatInputBox = memo(({
           </button>
         ) : (
           <button onClick={() => {
-            if (!isRunning && chatInput.trim()) {
-              onSend(chatInput);
-              setChatInput('');
-              setHistoryIndex(-1);
-            }
+            submit();
           }} disabled={!chatInput.trim()}>Send</button>
         )}
       </div>

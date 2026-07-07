@@ -8,6 +8,7 @@ import { registerModelsHandlers } from './ipc/models';
 import { registerWorkspaceHandlers } from './ipc/workspace';
 import { registerBrowserHandlers } from './ipc/browser';
 import { registerTaskHandlers } from './ipc/task';
+import { registerDebugTraceHandlers } from './ipc/debugTrace';
 import { startBuiltInResponsesProxy } from './converters/responsesProxy';
 
 // Removed unused require
@@ -59,6 +60,7 @@ app.whenReady().then(() => {
   registerWorkspaceHandlers();
   registerBrowserHandlers();
   registerTaskHandlers();
+  registerDebugTraceHandlers({ __dirname, VITE_DEV_SERVER_URL, RENDERER_DIST, VITE_PUBLIC: process.env.VITE_PUBLIC! });
 
   // Setup Menu
   const isMac = process.platform === 'darwin';

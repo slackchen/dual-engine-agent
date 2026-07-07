@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { traceEvent } from '../debugTrace';
 
 const LISTEN_HOST = '127.0.0.1';
 const LISTEN_PORT = 18765;
@@ -380,14 +381,47 @@ const handleChatCompletions = async (
   }
 
   const model = body.model || '';
+  traceEvent({
+    source: 'converter',
+    phase: 'request',
+    title: `Proxy chat/completions request ${proxyRequestId}`,
+    data: {
+      proxyRequestId,
+      upstreamBaseUrl,
+      upstreamPath,
+      model,
+      body,
+      headers: req.headers,
+    },
+  });
+
   if (!CONVERT_MODELS.has(model)) {
     console.log(`[BuiltInResponsesProxy:${proxyRequestId}] pass-through chat/completions model=${model || '(missing)'}`);
+    traceEvent({
+      source: 'converter',
+      phase: 'status',
+      title: `Proxy pass-through ${proxyRequestId}`,
+      data: {
+        proxyRequestId,
+        model,
+      },
+    });
     await passthrough(req, res, upstreamBaseUrl, upstreamPath, rawBody);
     return;
   }
 
   console.log(`[BuiltInResponsesProxy:${proxyRequestId}] converting chat/completions model=${model} to responses`);
   const responsesBody = convertChatToResponses(body);
+  traceEvent({
+    source: 'converter',
+    phase: 'request',
+    title: `Converted responses request ${proxyRequestId}`,
+    data: {
+      proxyRequestId,
+      upstreamUrl: `${upstreamRoot(upstreamBaseUrl)}/v1/responses`,
+      responsesBody,
+    },
+  });
   const upstream = await fetch(`${upstreamRoot(upstreamBaseUrl)}/v1/responses`, {
     method: 'POST',
     headers: {
@@ -400,13 +434,35 @@ const handleChatCompletions = async (
 
   if (!upstream.ok) {
     console.warn(`[BuiltInResponsesProxy:${proxyRequestId}] upstream responses error status=${upstream.status}`);
+    traceEvent({
+      source: 'converter',
+      phase: 'error',
+      title: `Responses upstream error ${proxyRequestId}`,
+      data: {
+        proxyRequestId,
+        status: upstream.status,
+        statusText: upstream.statusText,
+      },
+    });
     await sendRaw(res, upstream);
     return;
   }
 
   const events = parseSseEvents(await upstream.text());
   console.log(`[BuiltInResponsesProxy:${proxyRequestId}] responses completed events=${events.length}`);
-  sendJson(res, 200, responsesEventsToChatCompletion(model, events));
+  const chatCompletion = responsesEventsToChatCompletion(model, events);
+  traceEvent({
+    source: 'converter',
+    phase: 'response',
+    title: `Converted chat/completions response ${proxyRequestId}`,
+    data: {
+      proxyRequestId,
+      eventCount: events.length,
+      events,
+      chatCompletion,
+    },
+  });
+  sendJson(res, 200, chatCompletion);
 };
 
 export const getBuiltInResponsesProxyBaseUrl = (upstreamBaseUrl: string) =>
