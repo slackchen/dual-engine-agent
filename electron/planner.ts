@@ -1,9 +1,12 @@
-import { generateText } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { traceEvent } from './debugTrace';
 import { normalizeTokenUsage, type TokenUsageSummary } from '../src/shared/tokenUsage';
+import { MODEL_CONTEXT_BUDGETS, compactModelMessages, estimateModelRequestTokens } from '../src/shared/modelContext';
+import { compactObservationsForPlanner } from './execution/observationContext';
+import { streamTextWithTrace } from './modelStreaming';
+import { extractJsonStringField } from './execution/jsonStringFieldStream';
 
 export type RequiredTool =
   | 'readFile'
@@ -61,6 +64,8 @@ interface PlannerTraceContext {
   modelName: string;
   baseUrl: string;
   onTokenUsage?: (usage: TokenUsageSummary, metadata: Record<string, unknown>) => void;
+  onFinalResponseDelta?: (delta: string, metadata: Record<string, unknown>) => void;
+  onFinalResponseReset?: (metadata: Record<string, unknown>) => void;
 }
 
 export class PlannerEngine {
@@ -148,6 +153,10 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
           protocol: traceContext?.protocol,
           modelName: traceContext?.modelName,
           baseUrl: traceContext?.baseUrl,
+          requestTokenEstimate: estimateModelRequestTokens({
+            system,
+            messages: retryMessages,
+          }),
           system,
           messages: retryMessages,
         },
@@ -156,12 +165,42 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
       const startedAt = Date.now();
       let text = '';
       let usage: TokenUsageSummary = {};
+      let streamedText = '';
+      let streamedFinalResponseLength = 0;
       try {
-        const result = await generateText({
+        const result = await streamTextWithTrace({
           model,
           abortSignal,
           system,
           messages: retryMessages
+        }, {
+          runId: traceContext?.runId,
+          source: 'planner',
+          title: label,
+          metadata: {
+            label,
+            attempt,
+            modelName: traceContext?.modelName,
+            protocol: traceContext?.protocol,
+          },
+          onTextDelta: (delta) => {
+            if (!traceContext?.onFinalResponseDelta) return;
+            streamedText += delta;
+            const extracted = extractJsonStringField(streamedText, 'finalResponse');
+            if (!extracted) return;
+            const nextValue = extracted.value;
+            if (nextValue.length <= streamedFinalResponseLength) return;
+            const visibleDelta = nextValue.slice(streamedFinalResponseLength);
+            streamedFinalResponseLength = nextValue.length;
+            if (visibleDelta) {
+              traceContext.onFinalResponseDelta(visibleDelta, {
+                label,
+                attempt,
+                modelName: traceContext.modelName,
+                protocol: traceContext.protocol,
+              });
+            }
+          },
         });
         text = result.text;
         usage = normalizeTokenUsage(result.usage);
@@ -205,6 +244,14 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
       try {
         return JSON.parse(cleanJson);
       } catch {
+        if (streamedFinalResponseLength > 0) {
+          traceContext?.onFinalResponseReset?.({
+            label,
+            attempt,
+            modelName: traceContext?.modelName,
+            protocol: traceContext?.protocol,
+          });
+        }
         lastError = new Error(`${label}: attempt ${attempt} returned invalid JSON. Snippet: ${cleanJson.substring(0, 200)}`);
         traceEvent({
           runId: traceContext?.runId,
@@ -242,7 +289,12 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
       workspacePath: string;
     },
     abortSignal?: AbortSignal,
-    trace?: { runId?: string; onTokenUsage?: PlannerTraceContext['onTokenUsage'] }
+    trace?: {
+      runId?: string;
+      onTokenUsage?: PlannerTraceContext['onTokenUsage'];
+      onFinalResponseDelta?: PlannerTraceContext['onFinalResponseDelta'];
+      onFinalResponseReset?: PlannerTraceContext['onFinalResponseReset'];
+    }
   ): Promise<PlannerPlanResult> {
     const model = this.createModel(protocol, authMethod, tokenOrKey, modelName, baseUrl);
     const systemPrompt = `You are the Planner Controller for a Dual-Engine Agent desktop application.
@@ -330,22 +382,32 @@ Return ONLY this JSON schema:
   }
 }`;
 
+    const modelMessages = [
+      ...compactModelMessages(chatHistory, MODEL_CONTEXT_BUDGETS.plannerInitialHistory),
+      {
+        role: 'user',
+        content: JSON.stringify({
+          userRequest,
+          workspacePath: context.workspacePath
+        })
+      }
+    ];
+
     const result = await this.generateJson(
       'Initial plan and decision',
       model,
       systemPrompt,
-      [
-        ...chatHistory,
-        {
-          role: 'user',
-          content: JSON.stringify({
-            userRequest,
-            workspacePath: context.workspacePath
-          })
-        }
-      ],
+      modelMessages,
       abortSignal,
-      { runId: trace?.runId, protocol, modelName, baseUrl, onTokenUsage: trace?.onTokenUsage }
+      {
+        runId: trace?.runId,
+        protocol,
+        modelName,
+        baseUrl,
+        onTokenUsage: trace?.onTokenUsage,
+        onFinalResponseDelta: trace?.onFinalResponseDelta,
+        onFinalResponseReset: trace?.onFinalResponseReset,
+      }
     );
 
     return {
@@ -370,7 +432,12 @@ Return ONLY this JSON schema:
       decisionIndex: number;
     },
     abortSignal?: AbortSignal,
-    trace?: { runId?: string; onTokenUsage?: PlannerTraceContext['onTokenUsage'] }
+    trace?: {
+      runId?: string;
+      onTokenUsage?: PlannerTraceContext['onTokenUsage'];
+      onFinalResponseDelta?: PlannerTraceContext['onFinalResponseDelta'];
+      onFinalResponseReset?: PlannerTraceContext['onFinalResponseReset'];
+    }
   ): Promise<PlannerDecision> {
     const model = this.createModel(protocol, authMethod, tokenOrKey, modelName, baseUrl);
     const systemPrompt = `You are the Planner Controller for a Dual-Engine Agent.
@@ -448,25 +515,35 @@ Return ONLY this JSON schema:
   "reason": "For blocked decisions"
 }`;
 
+    const modelMessages = [
+      ...compactModelMessages(chatHistory, MODEL_CONTEXT_BUDGETS.plannerReviewHistory),
+      {
+        role: 'user',
+        content: JSON.stringify({
+          userRequest,
+          workspacePath: context.workspacePath,
+          initialPlan: context.initialPlan,
+          observations: compactObservationsForPlanner(context.observations),
+          decisionIndex: context.decisionIndex
+        })
+      }
+    ];
+
     const decision = await this.generateJson(
       'Planner decision',
       model,
       systemPrompt,
-      [
-        ...chatHistory,
-        {
-          role: 'user',
-          content: JSON.stringify({
-            userRequest,
-            workspacePath: context.workspacePath,
-            initialPlan: context.initialPlan,
-            observations: context.observations,
-            decisionIndex: context.decisionIndex
-          })
-        }
-      ],
+      modelMessages,
       abortSignal,
-      { runId: trace?.runId, protocol, modelName, baseUrl, onTokenUsage: trace?.onTokenUsage }
+      {
+        runId: trace?.runId,
+        protocol,
+        modelName,
+        baseUrl,
+        onTokenUsage: trace?.onTokenUsage,
+        onFinalResponseDelta: trace?.onFinalResponseDelta,
+        onFinalResponseReset: trace?.onFinalResponseReset,
+      }
     );
 
     return decision as PlannerDecision;
@@ -485,7 +562,12 @@ Return ONLY this JSON schema:
       approvedPlan: any;
     },
     abortSignal?: AbortSignal,
-    trace?: { runId?: string; onTokenUsage?: PlannerTraceContext['onTokenUsage'] }
+    trace?: {
+      runId?: string;
+      onTokenUsage?: PlannerTraceContext['onTokenUsage'];
+      onFinalResponseDelta?: PlannerTraceContext['onFinalResponseDelta'];
+      onFinalResponseReset?: PlannerTraceContext['onFinalResponseReset'];
+    }
   ): Promise<PlannerDecision> {
     const model = this.createModel(protocol, authMethod, tokenOrKey, modelName, baseUrl);
     const systemPrompt = `You are the Planner Controller for a Dual-Engine Agent desktop application.
@@ -558,23 +640,33 @@ Return ONLY this JSON schema:
   "reason": "For blocked decisions"
 }`;
 
+    const modelMessages = [
+      ...compactModelMessages(chatHistory, MODEL_CONTEXT_BUDGETS.plannerReviewHistory),
+      {
+        role: 'user',
+        content: JSON.stringify({
+          userRequest,
+          workspacePath: context.workspacePath,
+          approvedPlan: context.approvedPlan,
+        })
+      }
+    ];
+
     const decision = await this.generateJson(
       'Approved plan decision',
       model,
       systemPrompt,
-      [
-        ...chatHistory,
-        {
-          role: 'user',
-          content: JSON.stringify({
-            userRequest,
-            workspacePath: context.workspacePath,
-            approvedPlan: context.approvedPlan,
-          })
-        }
-      ],
+      modelMessages,
       abortSignal,
-      { runId: trace?.runId, protocol, modelName, baseUrl, onTokenUsage: trace?.onTokenUsage }
+      {
+        runId: trace?.runId,
+        protocol,
+        modelName,
+        baseUrl,
+        onTokenUsage: trace?.onTokenUsage,
+        onFinalResponseDelta: trace?.onFinalResponseDelta,
+        onFinalResponseReset: trace?.onFinalResponseReset,
+      }
     );
 
     return decision as PlannerDecision;

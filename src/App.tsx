@@ -106,6 +106,120 @@ const formatElapsed = (startedAt: number, now: number) => {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 };
 
+const useRevealedText = (text: string, animate: boolean, charsPerStep = 2, stepMs = 24, onComplete?: () => void) => {
+  const [displayText, setDisplayText] = useState(animate ? '' : text);
+  const displayRef = useRef(animate ? '' : text);
+  const onCompleteRef = useRef(onComplete);
+
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+
+  useEffect(() => {
+    if (!animate) {
+      displayRef.current = text;
+      setDisplayText(text);
+      return;
+    }
+
+    if (!text.startsWith(displayRef.current)) {
+      displayRef.current = '';
+      setDisplayText('');
+    }
+
+    let timer = 0;
+    const tick = () => {
+      const currentLength = displayRef.current.length;
+      if (currentLength >= text.length) {
+        onCompleteRef.current?.();
+        return;
+      }
+
+      const next = text.slice(0, Math.min(text.length, currentLength + charsPerStep));
+      displayRef.current = next;
+      setDisplayText(next);
+      timer = window.setTimeout(tick, stepMs);
+    };
+
+    timer = window.setTimeout(tick, stepMs);
+    return () => window.clearTimeout(timer);
+  }, [animate, charsPerStep, stepMs, text]);
+
+  return displayText;
+};
+
+const MarkdownContent = ({
+  content,
+  workspacePath,
+  animate,
+  showCaret = false,
+  charsPerStep = 2,
+  stepMs = 24,
+  onRevealComplete,
+  style,
+}: {
+  content: string;
+  workspacePath: string;
+  animate: boolean;
+  showCaret?: boolean;
+  charsPerStep?: number;
+  stepMs?: number;
+  onRevealComplete?: () => void;
+  style?: CSSProperties;
+}) => {
+  const displayContent = useRevealedText(content, animate, charsPerStep, stepMs, onRevealComplete);
+  const { reasoning, finalContent } = parseReasoning(displayContent);
+
+  return (
+    <div className="markdown-body" style={style}>
+      {reasoning && (
+        <details open style={{ marginBottom: '15px', background: 'var(--bg-secondary)', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
+          <summary style={{ padding: '8px 12px', cursor: 'pointer', outline: 'none', userSelect: 'none', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: 'bold' }}>
+            <span>馃</span> Thinking Process...
+          </summary>
+          <div style={{ padding: '12px', borderTop: '1px solid var(--border-color)', color: '#aaa', fontSize: '12px', whiteSpace: 'pre-wrap', fontStyle: 'italic', background: '#1e1e1e', borderBottomLeftRadius: '6px', borderBottomRightRadius: '6px' }}>
+            {reasoning}
+          </div>
+        </details>
+      )}
+      {finalContent && (
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            a({ href, children, ...props }: any) {
+              return (
+                <a href={href} {...props} onClick={(e) => {
+                  e.preventDefault();
+                  if (href) {
+                    let targetUrl = href;
+                    if (!href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('file://')) {
+                      targetUrl = `file://${workspacePath}/${href.startsWith('/') ? href.slice(1) : href}`;
+                    }
+                    window.ipcRenderer.invoke('agent:open-browser-window', { url: targetUrl }).catch(console.error);
+                  }
+                }} style={{ cursor: 'pointer', color: 'var(--accent)', textDecoration: 'underline' }}>
+                  {children}
+                </a>
+              );
+            },
+            code({ inline, className, children, ...props }: any) {
+              const match = /language-(\w+)/.exec(className || '');
+              return !inline && match ? (
+                <SyntaxHighlighter {...props} children={String(children).replace(/\n$/, '')} style={vscDarkPlus} language={match[1]} PreTag="div" />
+              ) : (
+                <code {...props} className={className}>{children}</code>
+              );
+            }
+          }}
+        >
+          {finalContent}
+        </ReactMarkdown>
+      )}
+      {showCaret && animate && displayContent.length < content.length && <span className="stream-caret" aria-hidden="true" />}
+    </div>
+  );
+};
+
 const getApiCallBreakdown = (msg: { apiCallCount?: number; plannerApiCallCount?: number; workerApiCallCount?: number }) => {
   const total = msg.apiCallCount || 0;
   const hasBreakdown = typeof msg.plannerApiCallCount === 'number' || typeof msg.workerApiCallCount === 'number';
@@ -422,6 +536,14 @@ function App() {
     setRunningRunIds(Array.from(runningRunIdsRef.current));
   }, []);
 
+  const markFinalSummaryRevealed = useCallback((messageId: string) => {
+    setMessages(prev => prev.map(message => (
+      message.id === messageId && message.finalSummaryRevealing
+        ? { ...message, finalSummaryRevealing: false }
+        : message
+    )));
+  }, [setMessages]);
+
   // ─── Terminal auto-scroll ─────────────────────────────────────────
   const handleTerminalScroll = useCallback(() => {
     const container = terminalContainerRef.current;
@@ -528,13 +650,56 @@ function App() {
           targetMsg.content += `### 📋 Orchestrator Plan\n${planText}\n\n`;
         } else if (data.type === 'subtask-result') {
           targetMsg.modelWaitStartedAt = null;
+          targetMsg.streamContent = '';
           const resultStr = typeof data.data === 'string' ? data.data : JSON.stringify(data.data || '');
           const resultText = resultStr.split('\n').map((l: string) => `> ${l}`).join('\n');
           targetMsg.content += `### 🤖 Task Result\n${resultText}\n\n`;
+        } else if (data.type === 'final-stream') {
+          const delta = typeof data.data?.delta === 'string' ? data.data.delta : '';
+          if (delta) {
+            targetMsg.streamContent = `${targetMsg.streamContent || ''}${delta}`;
+            targetMsg.modelWaitStartedAt = null;
+          }
+        } else if (data.type === 'final-stream-reset') {
+          targetMsg.streamContent = '';
+        } else if (data.type === 'plan-session-stream') {
+          const delta = typeof data.data?.delta === 'string' ? data.data.delta : '';
+          if (delta) {
+            const currentSession = targetMsg.planSession || {
+              status: 'needs_input' as const,
+              assistantMessage: '',
+              questions: [],
+              draftPlan: null,
+              finalPlan: null,
+            };
+            targetMsg.planSession = {
+              ...currentSession,
+              assistantMessage: `${currentSession.assistantMessage || ''}${delta}`,
+            };
+            targetMsg.modelWaitStartedAt = null;
+          }
+        } else if (data.type === 'plan-session-stream-reset') {
+          if (targetMsg.planSession) {
+            targetMsg.planSession = {
+              ...targetMsg.planSession,
+              assistantMessage: '',
+            };
+          }
         } else if (data.type === 'final-result') {
           targetMsg.modelWaitStartedAt = null;
-          const resultStr = typeof data.data === 'string' ? data.data : JSON.stringify(data.data || '');
+          const resultPayload = data.data;
+          const resultStr = resultPayload && typeof resultPayload === 'object' && typeof resultPayload.text === 'string'
+            ? resultPayload.text
+            : typeof resultPayload === 'string'
+              ? resultPayload
+              : JSON.stringify(resultPayload || '');
+          const streamedText = targetMsg.streamContent || '';
+          targetMsg.streamContent = '';
           targetMsg.finalSummary = resultStr;
+          targetMsg.finalSummaryMode = resultPayload && typeof resultPayload === 'object' && resultPayload.mode === 'conversation'
+            ? 'conversation'
+            : 'summary';
+          targetMsg.finalSummaryRevealing = streamedText.trim() !== resultStr.trim();
         } else if (data.type === 'api-call') {
           targetMsg.apiCallCount = (targetMsg.apiCallCount || 0) + 1;
           if (data.data === 'planner') {
@@ -556,6 +721,12 @@ function App() {
         } else if (data.type === 'agent-step') {
           targetMsg.modelWaitStartedAt = null;
           targetMsg.agentSteps = [...(targetMsg.agentSteps || []), data.data];
+        } else if (data.type === 'model-stream') {
+          const delta = typeof data.data?.delta === 'string' ? data.data.delta : '';
+          if (delta) {
+            targetMsg.streamContent = `${targetMsg.streamContent || ''}${delta}`;
+            targetMsg.modelWaitStartedAt = null;
+          }
         }
         newMessages[targetIdx] = targetMsg;
         return newMessages;
@@ -737,6 +908,7 @@ function App() {
         if (target.isComplete) return prev;
         target.isComplete = true;
         target.modelWaitStartedAt = null;
+        target.streamContent = '';
         const returnedFinalResult = result && typeof result === 'object' && typeof result.finalResult === 'string'
           ? result.finalResult
           : '';
@@ -744,6 +916,8 @@ function App() {
           target.content += `\n\n**[Error]**\n${result}`;
         } else if (returnedFinalResult && !target.finalSummary) {
           target.finalSummary = returnedFinalResult;
+          target.finalSummaryMode = 'summary';
+          target.finalSummaryRevealing = true;
         }
         n[idx] = target;
         return n;
@@ -757,6 +931,7 @@ function App() {
         if (target.isComplete) return prev;
         target.isComplete = true;
         target.modelWaitStartedAt = null;
+        target.streamContent = '';
         target.content += `\n\n**[Error]**\n${e.message}`;
         n[idx] = target;
         return n;
@@ -1179,7 +1354,16 @@ function App() {
                   </div>
                 )}
 
-                {msg.content && (() => {
+                {msg.content && !msg.isComplete && (
+                  <MarkdownContent
+                    content={msg.content}
+                    workspacePath={workspacePath}
+                    animate
+                    showCaret
+                  />
+                )}
+
+                {msg.content && msg.isComplete && (() => {
                   const { reasoning, finalContent } = parseReasoning(msg.content);
                   return (
                     <div className="markdown-body">
@@ -1268,6 +1452,18 @@ function App() {
                   />
                 )}
 
+                {msg.streamContent && (
+                  <MarkdownContent
+                    content={msg.streamContent}
+                    workspacePath={workspacePath}
+                    animate
+                    showCaret={!msg.isComplete}
+                    charsPerStep={2}
+                    stepMs={22}
+                    style={{ marginTop: '10px' }}
+                  />
+                )}
+
                 {msg.agentSteps?.length > 0 && (() => {
                   const mergedSteps: any[] = [];
                   for (let i = 0; i < msg.agentSteps.length; i++) {
@@ -1290,12 +1486,31 @@ function App() {
                   );
                 })()}
 
-                {msg.finalSummary && (
+                {msg.finalSummary && msg.finalSummaryMode === 'conversation' && (
+                  <MarkdownContent
+                    content={msg.finalSummary}
+                    workspacePath={workspacePath}
+                    animate={!!msg.finalSummaryRevealing}
+                    showCaret={!!msg.finalSummaryRevealing}
+                    charsPerStep={2}
+                    stepMs={28}
+                    onRevealComplete={() => markFinalSummaryRevealed(msg.id)}
+                    style={{ marginTop: '10px' }}
+                  />
+                )}
+
+                {msg.finalSummary && msg.finalSummaryMode !== 'conversation' && (
                   <div className="markdown-body" style={{ marginTop: '10px' }}>
                     <h3>✅ Final Summary</h3>
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {msg.finalSummary}
-                    </ReactMarkdown>
+                    <MarkdownContent
+                      content={msg.finalSummary}
+                      workspacePath={workspacePath}
+                      animate={!!msg.finalSummaryRevealing}
+                      showCaret={!!msg.finalSummaryRevealing}
+                      charsPerStep={2}
+                      stepMs={28}
+                      onRevealComplete={() => markFinalSummaryRevealed(msg.id)}
+                    />
                   </div>
                 )}
 

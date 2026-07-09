@@ -160,6 +160,26 @@ body, html, #root {
     box-shadow: 0 0 0 0 rgba(220, 220, 170, 0);
   }
 }
+
+.stream-caret {
+  display: inline-block;
+  width: 6px;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: -0.18em;
+  background: var(--accent);
+  animation: streamCaretBlink 900ms steps(2, start) infinite;
+}
+
+@keyframes streamCaretBlink {
+  0%, 45% {
+    opacity: 1;
+  }
+  46%, 100% {
+    opacity: 0;
+  }
+}
+
 @keyframes slideUpFadeIn {
   from {
     opacity: 0;

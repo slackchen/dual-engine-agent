@@ -11,8 +11,13 @@ import {
 import { executePlannerDecision } from '../execution/workerScheduler';
 import { traceEvent } from '../debugTrace';
 import { normalizeTokenUsage, tokenUsageHasValues, type TokenUsageSummary } from '../../src/shared/tokenUsage';
+import { MODEL_CONTEXT_BUDGETS, compactModelMessages } from '../../src/shared/modelContext';
 
 const MAX_CONTROLLER_DECISIONS = 20;
+
+const isConversationOnlyComplete = (decision: any) => (
+  decision?.type === 'complete' && decision?.completionEvidence?.source === 'conversation_only'
+);
 
 const approvedPlanToExecutionPlan = (approvedPlan: any) => normalizeInitialPlan({
   summary: typeof approvedPlan?.summary === 'string' && approvedPlan.summary.trim()
@@ -80,6 +85,70 @@ export function registerTaskHandlers() {
     });
   };
 
+  const sendFinalResponseDelta = (
+    sender: Electron.WebContents,
+    runId: string,
+    delta: string,
+    metadata: Record<string, unknown> = {}
+  ) => {
+    sender.send('agent:update', {
+      type: 'final-stream',
+      data: {
+        source: 'planner',
+        delta,
+        metadata,
+      },
+      runId,
+    });
+  };
+
+  const resetFinalResponseStream = (
+    sender: Electron.WebContents,
+    runId: string,
+    metadata: Record<string, unknown> = {}
+  ) => {
+    sender.send('agent:update', {
+      type: 'final-stream-reset',
+      data: {
+        source: 'planner',
+        metadata,
+      },
+      runId,
+    });
+  };
+
+  const sendPlanSessionDelta = (
+    sender: Electron.WebContents,
+    runId: string,
+    delta: string,
+    metadata: Record<string, unknown> = {}
+  ) => {
+    sender.send('agent:update', {
+      type: 'plan-session-stream',
+      data: {
+        source: 'plan-session',
+        delta,
+        metadata,
+      },
+      runId,
+    });
+  };
+
+  const resetPlanSessionStream = (
+    sender: Electron.WebContents,
+    runId: string,
+    metadata: Record<string, unknown> = {}
+  ) => {
+    sender.send('agent:update', {
+      type: 'plan-session-stream-reset',
+      data: {
+        source: 'plan-session',
+        metadata,
+      },
+      runId,
+    });
+  };
+
   ipcMain.handle('agent:stop-task', (_event, { runId }) => {
     traceEvent({
       runId,
@@ -112,6 +181,7 @@ export function registerTaskHandlers() {
 
     const fallbackConfig = { protocol, authMethod, tokenOrKey, baseUrl };
     const plannerRuntime = getEngineConfig(plannerConfig, fallbackConfig);
+    const plannerChatHistory = compactModelMessages(chatHistory || [], MODEL_CONTEXT_BUDGETS.planSessionChatHistory);
     const abortController = new AbortController();
     abortControllers[runId] = abortController;
     const signal = abortController.signal;
@@ -129,6 +199,7 @@ export function registerTaskHandlers() {
           workspacePath,
           planHistory,
           userReply,
+          chatHistoryMessages: plannerChatHistory.length,
         },
       });
       event.sender.send('agent:update', { type: 'status', data: 'Plan Mode: thinking through the plan...', runId });
@@ -143,7 +214,7 @@ export function registerTaskHandlers() {
         {
           userRequest,
           workspacePath,
-          chatHistory: chatHistory || [],
+          chatHistory: plannerChatHistory,
           planHistory: planHistory || [],
           userReply,
         },
@@ -151,6 +222,8 @@ export function registerTaskHandlers() {
         {
           runId,
           onTokenUsage: (usage, metadata) => sendTokenUsage(event.sender, runId, 'plan-session', usage, metadata),
+          onAssistantMessageDelta: (delta, metadata) => sendPlanSessionDelta(event.sender, runId, delta, metadata),
+          onAssistantMessageReset: (metadata) => resetPlanSessionStream(event.sender, runId, metadata),
         }
       );
       throwIfAborted(signal);
@@ -172,6 +245,8 @@ export function registerTaskHandlers() {
     const fallbackConfig = { protocol, authMethod, tokenOrKey, baseUrl };
     const plannerRuntime = getEngineConfig(plannerConfig, fallbackConfig);
     const workerRuntime = getEngineConfig(workerConfig, fallbackConfig);
+    const plannerChatHistory = compactModelMessages(chatHistory || [], MODEL_CONTEXT_BUDGETS.plannerInitialHistory);
+    const workerChatHistory = compactModelMessages(chatHistory || [], MODEL_CONTEXT_BUDGETS.workerHistory);
 
     const abortController = new AbortController();
     abortControllers[runId] = abortController;
@@ -192,7 +267,11 @@ export function registerTaskHandlers() {
           workerRuntime,
           approvedPlan,
           maxSteps,
-          chatHistory,
+          chatHistoryStats: {
+            receivedMessages: Array.isArray(chatHistory) ? chatHistory.length : 0,
+            plannerMessages: plannerChatHistory.length,
+            workerMessages: workerChatHistory.length,
+          },
         },
       });
       event.sender.send('agent:update', {
@@ -216,12 +295,14 @@ export function registerTaskHandlers() {
             plannerModel,
             task,
             plannerRuntime.baseUrl,
-            chatHistory || [],
+            plannerChatHistory,
             { workspacePath, approvedPlan },
             signal,
             {
               runId,
               onTokenUsage: (usage, metadata) => sendTokenUsage(event.sender, runId, 'planner', usage, metadata),
+              onFinalResponseDelta: (delta, metadata) => sendFinalResponseDelta(event.sender, runId, delta, metadata),
+              onFinalResponseReset: (metadata) => resetFinalResponseStream(event.sender, runId, metadata),
             }
           )
         : null;
@@ -235,12 +316,14 @@ export function registerTaskHandlers() {
           plannerModel,
           task,
           plannerRuntime.baseUrl,
-          chatHistory || [],
+          plannerChatHistory,
           { workspacePath },
           signal,
           {
             runId,
             onTokenUsage: (usage, metadata) => sendTokenUsage(event.sender, runId, 'planner', usage, metadata),
+            onFinalResponseDelta: (delta, metadata) => sendFinalResponseDelta(event.sender, runId, delta, metadata),
+            onFinalResponseReset: (metadata) => resetFinalResponseStream(event.sender, runId, metadata),
           }
         );
         plan.summary = initialPlanResult.summary;
@@ -248,15 +331,29 @@ export function registerTaskHandlers() {
       }
       throwIfAborted(signal);
 
-      event.sender.send('agent:update', { type: 'plan', data: plan, runId });
+      const firstDecision = approvedPlan ? initialDecision : initialPlanResult?.decision;
+      const shouldShowPlan = approvedPlan
+        || (Array.isArray(plan.subtasks) && plan.subtasks.length > 0)
+        || firstDecision?.type === 'execute'
+        || firstDecision?.type === 'execute_batch';
+      if (shouldShowPlan && !isConversationOnlyComplete(firstDecision)) {
+        event.sender.send('agent:update', { type: 'plan', data: plan, runId });
+      }
 
       const observations: any[] = [];
       const maxControllerDecisions = Math.min(Math.max(maxSteps || MAX_CONTROLLER_DECISIONS, 1), MAX_CONTROLLER_DECISIONS);
       let finalResultText = '';
-      const sendFinalResult = (fallbackText: string) => {
+      const sendFinalResult = (fallbackText: string, mode: 'conversation' | 'summary' = 'summary') => {
         throwIfAborted(signal);
         finalResultText = fallbackText;
-        event.sender.send('agent:update', { type: 'final-result', data: fallbackText, runId });
+        event.sender.send('agent:update', {
+          type: 'final-result',
+          data: {
+            text: fallbackText,
+            mode,
+          },
+          runId,
+        });
       };
       const completedResult = () => ({
         status: 'completed',
@@ -297,7 +394,7 @@ export function registerTaskHandlers() {
             title: 'Planner completed task',
             data: { decision, finalText },
           });
-          sendFinalResult(finalText);
+          sendFinalResult(finalText, isConversationOnlyComplete(decision) ? 'conversation' : 'summary');
           return true;
         }
 
@@ -329,7 +426,7 @@ export function registerTaskHandlers() {
           workerModel,
           userRequest: task,
           workspacePath,
-          chatHistory: chatHistory || [],
+          chatHistory: workerChatHistory,
           maxSteps: maxSteps || 20,
           previousObservations: observations,
           abortSignal: signal,
@@ -351,6 +448,17 @@ export function registerTaskHandlers() {
           },
           onTokenUsage: (source, usage, metadata) => {
             sendTokenUsage(event.sender, runId, source, usage, metadata);
+          },
+          onModelStream: (delta, metadata) => {
+            event.sender.send('agent:update', {
+              type: 'model-stream',
+              data: {
+                source: 'worker',
+                delta,
+                metadata,
+              },
+              runId,
+            });
           },
           onStep: (stepData: any) => {
             event.sender.send('agent:update', { type: 'agent-step', data: stepData, runId });
@@ -380,7 +488,6 @@ export function registerTaskHandlers() {
         return false;
       };
 
-      const firstDecision = approvedPlan ? initialDecision : initialPlanResult?.decision;
       if (firstDecision) {
         if (await handleDecision(firstDecision)) {
           return completedResult();
@@ -407,7 +514,7 @@ export function registerTaskHandlers() {
           plannerModel,
           task,
           plannerRuntime.baseUrl,
-          chatHistory || [],
+          plannerChatHistory,
           {
             workspacePath,
             initialPlan: plan,
@@ -418,6 +525,8 @@ export function registerTaskHandlers() {
           {
             runId,
             onTokenUsage: (usage, metadata) => sendTokenUsage(event.sender, runId, 'planner', usage, metadata),
+            onFinalResponseDelta: (delta, metadata) => sendFinalResponseDelta(event.sender, runId, delta, metadata),
+            onFinalResponseReset: (metadata) => resetFinalResponseStream(event.sender, runId, metadata),
           }
         );
         throwIfAborted(signal);

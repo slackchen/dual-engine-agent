@@ -1,9 +1,11 @@
-import { generateText } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { traceEvent } from './debugTrace';
 import { normalizeTokenUsage, type TokenUsageSummary } from '../src/shared/tokenUsage';
+import { MODEL_CONTEXT_BUDGETS, compactModelMessages, estimateModelRequestTokens } from '../src/shared/modelContext';
+import { streamTextWithTrace } from './modelStreaming';
+import { extractJsonStringField } from './execution/jsonStringFieldStream';
 
 export interface PlanOption {
   id: string;
@@ -52,6 +54,8 @@ interface PlanSessionTraceContext {
   modelName: string;
   baseUrl: string;
   onTokenUsage?: (usage: TokenUsageSummary, metadata: Record<string, unknown>) => void;
+  onAssistantMessageDelta?: (delta: string, metadata: Record<string, unknown>) => void;
+  onAssistantMessageReset?: (metadata: Record<string, unknown>) => void;
 }
 
 const emptyPlan = (): PlanDraft => ({
@@ -167,6 +171,10 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
           protocol: traceContext?.protocol,
           modelName: traceContext?.modelName,
           baseUrl: traceContext?.baseUrl,
+          requestTokenEstimate: estimateModelRequestTokens({
+            system,
+            messages: retryMessages,
+          }),
           system,
           messages: retryMessages,
         },
@@ -175,12 +183,40 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
       const startedAt = Date.now();
       let text = '';
       let usage: TokenUsageSummary = {};
+      let streamedText = '';
+      let streamedAssistantMessageLength = 0;
       try {
-        const result = await generateText({
+        const result = await streamTextWithTrace({
           model,
           abortSignal,
           system,
           messages: retryMessages,
+        }, {
+          runId: traceContext?.runId,
+          source: 'plan-session',
+          title: 'Plan session',
+          metadata: {
+            attempt,
+            modelName: traceContext?.modelName,
+            protocol: traceContext?.protocol,
+          },
+          onTextDelta: (delta) => {
+            if (!traceContext?.onAssistantMessageDelta) return;
+            streamedText += delta;
+            const extracted = extractJsonStringField(streamedText, 'assistantMessage');
+            if (!extracted) return;
+            const nextValue = extracted.value;
+            if (nextValue.length <= streamedAssistantMessageLength) return;
+            const visibleDelta = nextValue.slice(streamedAssistantMessageLength);
+            streamedAssistantMessageLength = nextValue.length;
+            if (visibleDelta) {
+              traceContext.onAssistantMessageDelta(visibleDelta, {
+                attempt,
+                modelName: traceContext.modelName,
+                protocol: traceContext.protocol,
+              });
+            }
+          },
         });
         text = result.text;
         usage = normalizeTokenUsage(result.usage);
@@ -221,6 +257,13 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
       try {
         return JSON.parse(cleanJson);
       } catch {
+        if (streamedAssistantMessageLength > 0) {
+          traceContext?.onAssistantMessageReset?.({
+            attempt,
+            modelName: traceContext?.modelName,
+            protocol: traceContext?.protocol,
+          });
+        }
         lastError = new Error(`Plan session returned invalid JSON. Snippet: ${cleanJson.substring(0, 200)}`);
         traceEvent({
           runId: traceContext?.runId,
@@ -258,7 +301,12 @@ Output ONLY a raw JSON object. Start with { and end with }. No markdown, heading
       userReply?: string;
     },
     abortSignal?: AbortSignal,
-    trace?: { runId?: string; onTokenUsage?: PlanSessionTraceContext['onTokenUsage'] }
+    trace?: {
+      runId?: string;
+      onTokenUsage?: PlanSessionTraceContext['onTokenUsage'];
+      onAssistantMessageDelta?: PlanSessionTraceContext['onAssistantMessageDelta'];
+      onAssistantMessageReset?: PlanSessionTraceContext['onAssistantMessageReset'];
+    }
   ): Promise<PlanSessionState> {
     const model = this.createModel(protocol, authMethod, tokenOrKey, modelName, baseUrl);
     const systemPrompt = `You are the Plan Mode facilitator for a Dual-Engine Agent desktop app.
@@ -314,23 +362,35 @@ Return ONLY this JSON schema:
   }
 }`;
 
+    const compactPlanHistory = compactModelMessages(input.planHistory || [], MODEL_CONTEXT_BUDGETS.planSessionPlanHistory);
+
+    const modelMessages = [
+      ...compactModelMessages(input.chatHistory || [], MODEL_CONTEXT_BUDGETS.planSessionChatHistory),
+      {
+        role: 'user',
+        content: JSON.stringify({
+          userRequest: input.userRequest,
+          workspacePath: input.workspacePath,
+          planHistory: compactPlanHistory,
+          latestUserReply: input.userReply || '',
+        }),
+      },
+    ];
+
     const result = await this.generateJson(
       model,
       systemPrompt,
-      [
-        ...(input.chatHistory || []),
-        {
-          role: 'user',
-          content: JSON.stringify({
-            userRequest: input.userRequest,
-            workspacePath: input.workspacePath,
-            planHistory: input.planHistory || [],
-            latestUserReply: input.userReply || '',
-          }),
-        },
-      ],
+      modelMessages,
       abortSignal,
-      { runId: trace?.runId, protocol, modelName, baseUrl, onTokenUsage: trace?.onTokenUsage }
+      {
+        runId: trace?.runId,
+        protocol,
+        modelName,
+        baseUrl,
+        onTokenUsage: trace?.onTokenUsage,
+        onAssistantMessageDelta: trace?.onAssistantMessageDelta,
+        onAssistantMessageReset: trace?.onAssistantMessageReset,
+      }
     );
 
     const status = result.status === 'final' ? 'final' : 'needs_input';

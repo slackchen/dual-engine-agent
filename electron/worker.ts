@@ -1,4 +1,3 @@
-import { generateText } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -10,6 +9,8 @@ import { createAppTools } from './tools/app';
 import type { RequiredTool } from './planner';
 import { traceEvent } from './debugTrace';
 import { normalizeTokenUsage, type TokenUsageSummary } from '../src/shared/tokenUsage';
+import { MODEL_CONTEXT_BUDGETS, compactModelMessages, estimateModelRequestTokens } from '../src/shared/modelContext';
+import { streamTextWithTrace } from './modelStreaming';
 
 const HARD_STEP_LIMIT = 100;
 const MIN_TOOL_STEP_LIMIT = 6;
@@ -51,7 +52,8 @@ export class WorkerEngine {
     requiredTool?: RequiredTool,
     abortSignal?: AbortSignal,
     onTokenUsage?: (usage: TokenUsageSummary, metadata: Record<string, unknown>) => void,
-    trace?: WorkerTraceContext
+    trace?: WorkerTraceContext,
+    onModelStream?: (delta: string, metadata: Record<string, unknown>) => void
   ): Promise<string> {
     if (!workspacePath) {
       throw new Error('No workspace selected. Please open a folder first.');
@@ -141,7 +143,7 @@ APP TOOL ARGUMENTS:
 - \`launchApp\`: use exactly \`{ "filePath": "build/Debug/tank_battle.exe" }\` or another workspace-relative executable path.
 - Use \`launchApp\` after building a native C++/SFML game when the user asks to open, run, or launch the game.`;
       const modelMessages = [
-        ...chatHistory,
+        ...compactModelMessages(chatHistory || [], MODEL_CONTEXT_BUDGETS.workerHistory),
         { role: 'user', content: `Task: ${taskDescription}` }
       ];
       const tools = {
@@ -165,6 +167,11 @@ APP TOOL ARGUMENTS:
           workerTaskId: trace?.workerTaskId,
           requiredTool: requiredTool || trace?.requiredTool,
           maxSteps,
+          requestTokenEstimate: estimateModelRequestTokens({
+            system: systemPrompt,
+            messages: modelMessages,
+            tools: Object.keys(tools),
+          }),
           system: systemPrompt,
           messages: modelMessages,
           tools: Object.keys(tools),
@@ -172,17 +179,17 @@ APP TOOL ARGUMENTS:
       });
 
       const startedAt = Date.now();
-      const result = await generateText({
+      const result = await streamTextWithTrace({
         model,
         abortSignal,
-        prepareStep: ({ stepNumber }) => (
+        prepareStep: ({ stepNumber }: any) => (
           stepNumber === 0
             ? requiredTool
               ? { activeTools: [requiredTool as any], toolChoice: 'required' as const }
               : { toolChoice: 'required' as const }
             : undefined
         ),
-        stopWhen: ({ steps }) => {
+        stopWhen: ({ steps }: any) => {
           if (plannerControlledMode && steps.length >= 1) {
             stopReason = `Completed required ${requiredTool} tool action.`;
             return true;
@@ -285,6 +292,20 @@ APP TOOL ARGUMENTS:
         system: systemPrompt,
         messages: modelMessages,
         tools
+      }, {
+        runId: trace?.runId,
+        source: 'worker',
+        title: trace?.workerInstance || 'Worker',
+        metadata: {
+          workerInstance: trace?.workerInstance,
+          workerTaskId: trace?.workerTaskId,
+          modelName,
+          protocol,
+          requiredTool: requiredTool || trace?.requiredTool,
+        },
+        onTextDelta: (delta, metadata) => {
+          onModelStream?.(delta, metadata);
+        },
       });
       const text = result.text;
       const usage = normalizeTokenUsage(result.usage);

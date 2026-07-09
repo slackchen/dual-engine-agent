@@ -4,6 +4,8 @@ import { normalizeRequiredTool, VALID_REQUIRED_TOOLS } from './decisionUtils';
 import { evaluatePlannerToolPolicy } from './toolPolicy';
 import { traceEvent } from '../debugTrace';
 import type { TokenUsageSummary } from '../../src/shared/tokenUsage';
+import { MODEL_CONTEXT_BUDGETS, compactModelMessages, compactTextForModel } from '../../src/shared/modelContext';
+import { compactObservationsForWorker, compactStepForObservation } from './observationContext';
 
 const MAX_PARALLEL_WORKERS = 3;
 
@@ -29,6 +31,7 @@ interface ExecutePlannerDecisionArgs {
   onLog: (log: string) => void;
   onWorkerApiCall: () => void;
   onTokenUsage: (source: 'worker', usage: TokenUsageSummary, metadata: Record<string, unknown>) => void;
+  onModelStream: (delta: string, metadata: Record<string, unknown>) => void;
   onStep: (stepData: any) => void;
   onModelWait: () => void;
   onOpenBrowser: (url: string) => void;
@@ -41,52 +44,6 @@ interface RunnablePlannerTask {
   task: PlannerTask;
   requiredTool: RequiredTool;
   workerLabel: string;
-}
-
-function compactText(value: any, maxLength = 1200) {
-  const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
-  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
-}
-
-function compactArgs(args: any) {
-  if (!args || typeof args !== 'object') return args;
-  const compact: Record<string, any> = {};
-  for (const [key, value] of Object.entries(args)) {
-    if (typeof value === 'string' && value.length > 500) {
-      compact[key] = `${value.slice(0, 500)}... (${value.length} chars)`;
-    } else {
-      compact[key] = value;
-    }
-  }
-  return compact;
-}
-
-function compactStep(step: any) {
-  return {
-    workerTaskId: step?.workerTaskId,
-    workerTaskDescription: step?.workerTaskDescription,
-    workerInstance: step?.workerInstance,
-    thought: compactText(step?.thought || '', 400),
-    actions: (step?.actions || []).map((action: any) => ({
-      toolName: action.toolName,
-      args: compactArgs(action.args),
-    })),
-    results: (step?.results || []).map((result: any) => ({
-      toolName: result.toolName,
-      success: result.success,
-      commandSuccess: result.commandSuccess,
-      exitCode: result.exitCode,
-      pid: result.pid,
-      message: compactText(result.message || result.error || '', 800),
-      url: result.url,
-      filePath: result.filePath,
-      displayPath: result.displayPath,
-      startLine: result.startLine,
-      endLine: result.endLine,
-      linesAdded: result.linesAdded,
-      linesRemoved: result.linesRemoved,
-    })),
-  };
 }
 
 function normalizePlannerTasks(decision: PlannerDecision) {
@@ -136,7 +93,7 @@ function buildTaskPrompt(task: PlannerTask, requiredTool: RequiredTool, observat
     `Success criteria: ${task.successCriteria}`,
     `Failure policy: ${task.failurePolicy}`,
     `Context from previous Planner decisions and Worker observations:`,
-    compactText(observations, 4000),
+    compactObservationsForWorker(observations, 4000),
   ].join('\n\n');
 }
 
@@ -231,7 +188,7 @@ async function executeOneTask(
       if (!args.abortSignal?.aborted) args.onFileUpdated(filePath, payload);
     },
     args.workerRuntime.baseUrl,
-    args.chatHistory || [],
+    compactModelMessages(args.chatHistory || [], MODEL_CONTEXT_BUDGETS.workerHistory),
     args.maxSteps || 20,
     runnable.requiredTool,
     args.abortSignal,
@@ -241,6 +198,16 @@ async function executeOneTask(
       workerInstance: runnable.workerLabel,
       workerTaskId: runnable.task.id,
       requiredTool: runnable.requiredTool,
+    },
+    (delta, metadata) => {
+      if (!args.abortSignal?.aborted) {
+        args.onModelStream(delta, {
+          ...metadata,
+          workerInstance: runnable.workerLabel,
+          workerTaskId: runnable.task.id,
+          requiredTool: runnable.requiredTool,
+        });
+      }
     }
   );
 
@@ -260,9 +227,9 @@ async function executeOneTask(
       completionCriteria: args.decision.completionCriteria,
     },
     completionCriteria: args.decision.completionCriteria,
-    workerResult: compactText(result, 1600),
+    workerResult: compactTextForModel(result, 1600),
     workerInstance: runnable.workerLabel,
-    steps: stepDataForObservation.map(compactStep),
+    steps: stepDataForObservation.map(compactStepForObservation),
   };
 }
 

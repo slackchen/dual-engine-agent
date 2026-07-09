@@ -1,4 +1,5 @@
 import type { Message, PlanDraft, PlanSessionState } from './types';
+import { MODEL_CONTEXT_BUDGETS, compactModelMessages } from './shared/modelContext';
 
 function formatPlanDraft(plan: PlanDraft | null | undefined) {
   if (!plan) return '';
@@ -34,17 +35,15 @@ export function formatPlanSessionForHistory(session: PlanSessionState | null | u
 }
 
 export function buildChatHistory(messages: Message[]) {
-  return messages
+  const rawHistory = messages
     .filter(message => message.id !== 'init')
     .map(message => {
       let textContent = message.content || '';
 
-      if (message.role === 'ai' && message.planSession) {
-        textContent = [textContent, formatPlanSessionForHistory(message.planSession)].filter(Boolean).join('\n\n');
-      }
-
       if (message.role === 'ai' && message.finalSummary) {
-        textContent = `${textContent}\n\nFinal Summary:\n${message.finalSummary}`.trim();
+        textContent = `Final Summary:\n${message.finalSummary}`;
+      } else if (message.role === 'ai' && message.planSession) {
+        textContent = formatPlanSessionForHistory(message.planSession);
       }
 
       if (message.role === 'ai' && !textContent && message.agentSteps?.length > 0) {
@@ -57,4 +56,6 @@ export function buildChatHistory(messages: Message[]) {
       return { role: message.role === 'user' ? 'user' : 'assistant', content: textContent };
     })
     .filter(message => !!message.content);
+
+  return compactModelMessages(rawHistory, MODEL_CONTEXT_BUDGETS.frontendChatHistory);
 }

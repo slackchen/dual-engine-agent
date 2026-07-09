@@ -11,6 +11,7 @@ export type DebugTraceSource =
 
 export type DebugTracePhase =
   | 'request'
+  | 'response-stream'
   | 'response'
   | 'step'
   | 'usage'

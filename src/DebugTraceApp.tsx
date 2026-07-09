@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  formatTokenUsageBrief,
-  formatTokenUsageDetail,
+  addTokenUsage,
+  formatTokenCount,
   normalizeTokenUsage,
+  type TokenUsageSummary,
   tokenUsageHasValues,
 } from './shared/tokenUsage';
+import { estimateModelRequestTokens } from './shared/modelContext';
 
 type DebugTraceEvent = {
   id: string;
@@ -19,6 +21,17 @@ type DebugTraceEvent = {
 type DebugTraceState = {
   enabled: boolean;
   events: DebugTraceEvent[];
+};
+
+type RequestTokenEstimate = {
+  inputTokens?: number;
+  systemTokens?: number;
+  messageTokens?: number;
+  toolTokens?: number;
+  totalChars?: number;
+  messageCount?: number;
+  toolCount?: number;
+  estimated?: boolean;
 };
 
 const emptyState: DebugTraceState = {
@@ -72,6 +85,9 @@ function getTraceEventUsage(event: DebugTraceEvent) {
   const usage = normalizeTokenUsage(data?.usage);
   if (tokenUsageHasValues(usage)) return usage;
 
+  const chunkUsage = normalizeTokenUsage(data?.chunk?.usage);
+  if (tokenUsageHasValues(chunkUsage)) return chunkUsage;
+
   const stepUsage = normalizeTokenUsage(data?.stepData?.usage);
   if (tokenUsageHasValues(stepUsage)) return stepUsage;
 
@@ -82,6 +98,106 @@ function getTraceEventUsage(event: DebugTraceEvent) {
   if (tokenUsageHasValues(resultUsage)) return resultUsage;
 
   return {};
+}
+
+function getTraceEventStreamContent(event: DebugTraceEvent) {
+  if (event.phase !== 'response-stream') return null;
+  const data = event.data as any;
+  const parts = [
+    data?.textDelta ? { label: 'text', value: String(data.textDelta) } : null,
+    data?.reasoningDelta ? { label: 'reasoning', value: String(data.reasoningDelta) } : null,
+    data?.toolInputDelta ? { label: 'tool input', value: String(data.toolInputDelta) } : null,
+  ].filter(Boolean) as Array<{ label: string; value: string }>;
+
+  if (parts.length === 0) return null;
+  return {
+    label: parts.map(part => part.label).join(' + '),
+    text: parts.map(part => part.value).join(''),
+  };
+}
+
+function compactPreview(value: string, maxLength = 180) {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
+}
+
+function positiveNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function getTraceEventRequestEstimate(event: DebugTraceEvent): RequestTokenEstimate | null {
+  const data = event.data as any;
+  const estimate = data?.requestTokenEstimate || data?.requestTokens;
+  const inputTokens = positiveNumber(estimate?.inputTokens ?? estimate?.totalTokens);
+  if (inputTokens) {
+    return {
+      ...estimate,
+      inputTokens,
+    };
+  }
+
+  if (event.phase !== 'request') return null;
+
+  const fallbackEstimate = estimateModelRequestTokens({
+    system: data?.system,
+    messages: Array.isArray(data?.messages) ? data.messages : [],
+    tools: data?.tools,
+  });
+
+  return fallbackEstimate.inputTokens > 0 ? fallbackEstimate : null;
+}
+
+function formatRequestEstimateBrief(estimate: RequestTokenEstimate) {
+  return `send \u2191${formatTokenCount(estimate.inputTokens)}`;
+}
+
+function formatRequestEstimateDetail(estimate: RequestTokenEstimate) {
+  const parts = [`Send est \u2191${formatTokenCount(estimate.inputTokens)}`];
+  if (positiveNumber(estimate.systemTokens)) parts.push(`System ${formatTokenCount(estimate.systemTokens)}`);
+  if (positiveNumber(estimate.messageTokens)) parts.push(`Messages ${formatTokenCount(estimate.messageTokens)}`);
+  if (positiveNumber(estimate.toolTokens)) parts.push(`Tools ${formatTokenCount(estimate.toolTokens)}`);
+  if (positiveNumber(estimate.totalChars)) parts.push(`${formatTokenCount(estimate.totalChars)} chars`);
+  if (positiveNumber(estimate.messageCount)) parts.push(`${estimate.messageCount} msg`);
+  if (positiveNumber(estimate.toolCount)) parts.push(`${estimate.toolCount} tools`);
+  return parts.join(' / ');
+}
+
+function formatReceiveUsageBrief(usage?: TokenUsageSummary) {
+  const normalized = normalizeTokenUsage(usage);
+  if (positiveNumber(normalized.outputTokens)) return `recv \u2193${formatTokenCount(normalized.outputTokens)}`;
+  if (positiveNumber(normalized.totalTokens)) return `reported ${formatTokenCount(normalized.totalTokens)} tok`;
+  return '';
+}
+
+function formatReceiveUsageDetail(usage?: TokenUsageSummary) {
+  const normalized = normalizeTokenUsage(usage);
+  const parts: string[] = [];
+
+  if (positiveNumber(normalized.outputTokens)) {
+    parts.push(`Receive \u2193${formatTokenCount(normalized.outputTokens)}`);
+  } else if (positiveNumber(normalized.totalTokens)) {
+    parts.push(`Reported ${formatTokenCount(normalized.totalTokens)} total`);
+  }
+
+  if (positiveNumber(normalized.inputTokens)) parts.push(`Actual \u2191${formatTokenCount(normalized.inputTokens)}`);
+  if (positiveNumber(normalized.totalTokens)) parts.push(`Total ${formatTokenCount(normalized.totalTokens)}`);
+  if (positiveNumber(normalized.reasoningTokens)) parts.push(`Reasoning ${formatTokenCount(normalized.reasoningTokens)}`);
+  if (positiveNumber(normalized.cacheReadTokens)) parts.push(`Cache read ${formatTokenCount(normalized.cacheReadTokens)}`);
+  if (positiveNumber(normalized.cacheWriteTokens)) parts.push(`Cache write ${formatTokenCount(normalized.cacheWriteTokens)}`);
+  return parts.join(' / ');
+}
+
+function addRequestEstimates(left: RequestTokenEstimate, right: RequestTokenEstimate): RequestTokenEstimate {
+  return {
+    inputTokens: (left.inputTokens ?? 0) + (right.inputTokens ?? 0),
+    systemTokens: (left.systemTokens ?? 0) + (right.systemTokens ?? 0),
+    messageTokens: (left.messageTokens ?? 0) + (right.messageTokens ?? 0),
+    toolTokens: (left.toolTokens ?? 0) + (right.toolTokens ?? 0),
+    totalChars: (left.totalChars ?? 0) + (right.totalChars ?? 0),
+    messageCount: (left.messageCount ?? 0) + (right.messageCount ?? 0),
+    toolCount: (left.toolCount ?? 0) + (right.toolCount ?? 0),
+    estimated: true,
+  };
 }
 
 export function DebugTraceApp() {
@@ -127,16 +243,48 @@ export function DebugTraceApp() {
     return state.events.filter(event => {
       if (sourceFilter !== 'all' && event.source !== sourceFilter) return false;
       if (!normalizedQuery) return true;
-      const haystack = `${event.title} ${event.source} ${event.phase} ${event.runId || ''}`.toLowerCase();
+      const streamContent = getTraceEventStreamContent(event);
+      const haystack = `${event.title} ${event.source} ${event.phase} ${event.runId || ''} ${streamContent?.text || ''}`.toLowerCase();
       return haystack.includes(normalizedQuery);
     });
   }, [query, sourceFilter, state.events]);
+
+  const tokenStats = useMemo(() => {
+    let requestCount = 0;
+    let responseCount = 0;
+    let sendEstimate: RequestTokenEstimate = {};
+    let reportedUsage = {};
+
+    for (const event of filteredEvents) {
+      const requestEstimate = getTraceEventRequestEstimate(event);
+      if (requestEstimate) {
+        requestCount += 1;
+        sendEstimate = addRequestEstimates(sendEstimate, requestEstimate);
+      }
+
+      const usage = getTraceEventUsage(event);
+      if (tokenUsageHasValues(usage)) {
+        responseCount += 1;
+        reportedUsage = addTokenUsage(reportedUsage, usage);
+      }
+    }
+
+    return {
+      requestCount,
+      responseCount,
+      sendEstimate,
+      reportedUsage,
+    };
+  }, [filteredEvents]);
 
   const selectedEvent = useMemo(
     () => state.events.find(event => event.id === selectedId) || filteredEvents.at(-1) || null,
     [filteredEvents, selectedId, state.events]
   );
 
+  const selectedUsage = selectedEvent ? getTraceEventUsage(selectedEvent) : {};
+  const selectedRequestEstimate = selectedEvent ? getTraceEventRequestEstimate(selectedEvent) : null;
+  const selectedStreamContent = selectedEvent ? getTraceEventStreamContent(selectedEvent) : null;
   const selectedJson = selectedEvent ? JSON.stringify(selectedEvent, null, 2) : '';
 
   const setEnabled = async (enabled: boolean) => {
@@ -175,6 +323,21 @@ export function DebugTraceApp() {
         <button onClick={clear} style={buttonStyle}>Clear</button>
       </div>
 
+      <div style={{ minHeight: '34px', display: 'flex', alignItems: 'center', gap: '10px', padding: '0 14px', borderBottom: '1px solid #2f2f2f', background: '#202020', flexShrink: 0, fontSize: '12px' }}>
+        <span style={{ color: '#8a8a8a' }}>Tokens</span>
+        {positiveNumber(tokenStats.sendEstimate.inputTokens) ? (
+          <span style={sendTokenBadgeStyle}>{formatRequestEstimateDetail(tokenStats.sendEstimate)}</span>
+        ) : (
+          <span style={{ color: '#6f6f6f' }}>No request token estimate in the current filter</span>
+        )}
+        {tokenUsageHasValues(tokenStats.reportedUsage) && (
+          <span style={usageTokenBadgeStyle}>{formatReceiveUsageDetail(tokenStats.reportedUsage)}</span>
+        )}
+        <span style={{ color: '#6f6f6f', marginLeft: 'auto' }}>
+          {tokenStats.requestCount} requests / {tokenStats.responseCount} usage events
+        </span>
+      </div>
+
       <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: '360px minmax(0, 1fr)' }}>
         <div style={{ borderRight: '1px solid #333', overflowY: 'auto' }}>
           {filteredEvents.length === 0 && (
@@ -185,6 +348,8 @@ export function DebugTraceApp() {
           {filteredEvents.map(event => {
             const selected = selectedEvent?.id === event.id;
             const usage = getTraceEventUsage(event);
+            const requestEstimate = getTraceEventRequestEstimate(event);
+            const streamContent = getTraceEventStreamContent(event);
             return (
               <button
                 key={event.id}
@@ -204,12 +369,18 @@ export function DebugTraceApp() {
                   <span>{formatTime(event.timestamp)}</span>
                   <span style={{ color: sourceColors[event.source] || '#d4d4d4' }}>{event.source}</span>
                   <span>{event.phase}</span>
-                  {tokenUsageHasValues(usage) && <span style={{ color: '#dcdcaa' }}>{formatTokenUsageBrief(usage)}</span>}
+                  {requestEstimate && <span style={sendTokenBadgeStyle}>{formatRequestEstimateBrief(requestEstimate)}</span>}
+                  {tokenUsageHasValues(usage) && <span style={usageTokenBadgeStyle}>{formatReceiveUsageBrief(usage)}</span>}
                   <span style={{ marginLeft: 'auto' }}>{shortRunId(event.runId)}</span>
                 </div>
                 <div style={{ fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {event.title}
                 </div>
+                {streamContent && (
+                  <div style={{ marginTop: '5px', fontFamily: 'Consolas, monospace', fontSize: '11px', color: '#c8c8c8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <span style={{ color: '#8a8a8a' }}>{streamContent.label}: </span>{compactPreview(streamContent.text)}
+                  </div>
+                )}
               </button>
             );
           })}
@@ -221,12 +392,23 @@ export function DebugTraceApp() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', fontSize: '12px' }}>
                 <span style={{ color: sourceColors[selectedEvent.source] || '#d4d4d4', fontWeight: 600 }}>{selectedEvent.source}</span>
                 <span>{selectedEvent.phase}</span>
-                {tokenUsageHasValues(getTraceEventUsage(selectedEvent)) && (
-                  <span style={{ color: '#dcdcaa' }}>{formatTokenUsageDetail(getTraceEventUsage(selectedEvent))}</span>
+                {selectedRequestEstimate && (
+                  <span style={sendTokenBadgeStyle}>{formatRequestEstimateDetail(selectedRequestEstimate)}</span>
+                )}
+                {tokenUsageHasValues(selectedUsage) && (
+                  <span style={usageTokenBadgeStyle}>{formatReceiveUsageDetail(selectedUsage)}</span>
                 )}
                 <span style={{ color: '#8a8a8a' }}>{selectedEvent.timestamp}</span>
                 <span style={{ color: '#8a8a8a', marginLeft: 'auto' }}>{selectedEvent.runId || 'global'}</span>
               </div>
+              {selectedStreamContent && (
+                <div style={{ marginBottom: '12px' }}>
+                  <div style={{ fontSize: '11px', color: '#8a8a8a', marginBottom: '4px' }}>Stream Chunk: {selectedStreamContent.label}</div>
+                  <pre style={{ margin: 0, padding: '10px', border: '1px solid #333', borderRadius: '4px', background: '#181818', color: '#d4d4d4', fontFamily: 'Consolas, monospace', fontSize: '12px', lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    {selectedStreamContent.text}
+                  </pre>
+                </div>
+              )}
               <pre style={{ margin: 0, fontFamily: 'Consolas, monospace', fontSize: '12px', lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                 {selectedJson}
               </pre>
@@ -252,4 +434,22 @@ const controlStyle: React.CSSProperties = {
 const buttonStyle: React.CSSProperties = {
   ...controlStyle,
   cursor: 'pointer',
+};
+
+const sendTokenBadgeStyle: React.CSSProperties = {
+  color: '#9cdcfe',
+  background: 'rgba(156, 220, 254, 0.1)',
+  border: '1px solid rgba(156, 220, 254, 0.2)',
+  borderRadius: '4px',
+  padding: '1px 5px',
+  whiteSpace: 'nowrap',
+};
+
+const usageTokenBadgeStyle: React.CSSProperties = {
+  color: '#dcdcaa',
+  background: 'rgba(220, 220, 170, 0.1)',
+  border: '1px solid rgba(220, 220, 170, 0.2)',
+  borderRadius: '4px',
+  padding: '1px 5px',
+  whiteSpace: 'nowrap',
 };

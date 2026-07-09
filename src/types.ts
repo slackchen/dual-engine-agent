@@ -52,6 +52,7 @@ export interface Message {
   id: string;
   role: 'user' | 'ai';
   content: string;
+  streamContent?: string;
   statusLogs: string[];
   agentSteps: any[];
   apiCallCount: number;
@@ -63,6 +64,8 @@ export interface Message {
   isComplete?: boolean;
   plan?: any;
   finalSummary?: string;
+  finalSummaryMode?: 'conversation' | 'summary';
+  finalSummaryRevealing?: boolean;
   modelWaitStartedAt?: number | null;
   planModeRequest?: string;
   planSession?: PlanSessionState;

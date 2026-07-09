@@ -33,6 +33,10 @@ const sendJson = (res: http.ServerResponse, status: number, body: JsonRecord) =>
   res.end(payload);
 };
 
+const sendSseEvent = (res: http.ServerResponse, data: JsonRecord | '[DONE]') => {
+  res.write(`data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`);
+};
+
 const sendRaw = async (res: http.ServerResponse, upstream: Response) => {
   const payload = Buffer.from(await upstream.arrayBuffer());
   res.writeHead(upstream.status, {
@@ -348,6 +352,236 @@ const responsesEventsToChatCompletion = (model: string, events: Array<{ type: st
   return response;
 };
 
+const responsesUsageToChatUsage = (usage: JsonRecord | null | undefined) => {
+  if (!usage) return undefined;
+
+  const promptTokens = usage.input_tokens;
+  const completionTokens = usage.output_tokens;
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: usage.total_tokens ?? ((promptTokens ?? 0) + (completionTokens ?? 0)),
+  };
+};
+
+const streamResponsesAsChatCompletion = async (
+  res: http.ServerResponse,
+  model: string,
+  upstream: Response,
+  proxyRequestId: string,
+) => {
+  const chatId = `chatcmpl-${shortId()}`;
+  const created = Math.floor(Date.now() / 1000);
+  let responseId = '';
+  let usage: JsonRecord | null = null;
+  let finishReason = 'stop';
+  let sentRole = false;
+  let hasToolCalls = false;
+  const argumentDeltas = new Set<number>();
+
+  const sendChunk = (choice: JsonRecord, chunkUsage?: JsonRecord) => {
+    sendSseEvent(res, {
+      id: responseId || chatId,
+      object: 'chat.completion.chunk',
+      created,
+      model,
+      choices: [choice],
+      ...(chunkUsage ? { usage: responsesUsageToChatUsage(chunkUsage) } : {}),
+    });
+  };
+
+  const sendRole = () => {
+    if (sentRole) return;
+    sentRole = true;
+    sendChunk({
+      index: 0,
+      delta: { role: 'assistant' },
+      finish_reason: null,
+    });
+  };
+
+  const flushEvent = (type: string, data: JsonRecord) => {
+    if (!type) return;
+
+    if (type === 'response.output_text.delta') {
+      sendRole();
+      sendChunk({
+        index: 0,
+        delta: { content: data.delta || '' },
+        finish_reason: null,
+      });
+      traceEvent({
+        source: 'converter',
+        phase: 'response-stream',
+        title: `Converted responses text delta ${proxyRequestId}`,
+        data: {
+          proxyRequestId,
+          delta: data.delta || '',
+        },
+      });
+    } else if (type === 'response.output_item.added') {
+      const item = data.item || {};
+      if (item.type === 'function_call') {
+        sendRole();
+        hasToolCalls = true;
+        const index = Number(data.output_index || 0);
+        sendChunk({
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index,
+              id: item.call_id || `call_${shortId()}`,
+              type: 'function',
+              function: {
+                name: item.name || '',
+                arguments: '',
+              },
+            }],
+          },
+          finish_reason: null,
+        });
+      }
+    } else if (type === 'response.function_call_arguments.delta') {
+      sendRole();
+      hasToolCalls = true;
+      const index = Number(data.output_index || 0);
+      argumentDeltas.add(index);
+      sendChunk({
+        index: 0,
+        delta: {
+          tool_calls: [{
+            index,
+            function: {
+              arguments: data.delta || '',
+            },
+          }],
+        },
+        finish_reason: null,
+      });
+    } else if (type === 'response.function_call_arguments.done') {
+      const index = Number(data.output_index || 0);
+      if (data.arguments && !argumentDeltas.has(index)) {
+        sendRole();
+        hasToolCalls = true;
+        sendChunk({
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index,
+              function: {
+                arguments: data.arguments,
+              },
+            }],
+          },
+          finish_reason: null,
+        });
+      }
+    } else if (type === 'response.completed') {
+      const response = data.response || {};
+      responseId = response.id || responseId;
+      usage = response.usage || null;
+      finishReason = response.status === 'incomplete'
+        ? 'length'
+        : hasToolCalls
+          ? 'tool_calls'
+          : 'stop';
+    } else if (type === 'response.failed' || type === 'error') {
+      finishReason = 'stop';
+      traceEvent({
+        source: 'converter',
+        phase: 'error',
+        title: `Responses stream error ${proxyRequestId}`,
+        data: {
+          proxyRequestId,
+          type,
+          data,
+        },
+      });
+    }
+  };
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+  });
+
+  if (!upstream.body) {
+    sendRole();
+    sendChunk({
+      index: 0,
+      delta: {},
+      finish_reason: finishReason,
+    }, usage || undefined);
+    sendSseEvent(res, '[DONE]');
+    res.end();
+    return;
+  }
+
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let currentType = '';
+  let dataLines: string[] = [];
+
+  const flushBufferedEvent = () => {
+    if (!currentType) return;
+    const blob = dataLines.join('');
+    let data: JsonRecord = {};
+    try {
+      data = blob ? JSON.parse(blob) : {};
+    } catch {
+      data = { _raw: blob };
+    }
+    flushEvent(currentType, data);
+    currentType = '';
+    dataLines = [];
+  };
+
+  const processLine = (line: string) => {
+    if (line.startsWith('event:')) currentType = line.slice(6).trim();
+    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+    else if (!line.trim()) flushBufferedEvent();
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) processLine(line);
+  }
+
+  buffer += decoder.decode();
+  if (buffer) {
+    for (const line of buffer.split(/\r?\n/)) processLine(line);
+  }
+  flushBufferedEvent();
+
+  sendRole();
+  sendChunk({
+    index: 0,
+    delta: {},
+    finish_reason: finishReason,
+  }, usage || undefined);
+  sendSseEvent(res, '[DONE]');
+  res.end();
+
+  traceEvent({
+    source: 'converter',
+    phase: 'response',
+    title: `Converted streaming chat/completions response ${proxyRequestId}`,
+    data: {
+      proxyRequestId,
+      model,
+      finishReason,
+      usage: responsesUsageToChatUsage(usage),
+    },
+  });
+};
+
 const passthrough = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -449,6 +683,11 @@ const handleChatCompletions = async (
       },
     });
     await sendRaw(res, upstream);
+    return;
+  }
+
+  if (body.stream === true) {
+    await streamResponsesAsChatCompletion(res, model, upstream, proxyRequestId);
     return;
   }
 
